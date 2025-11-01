@@ -64,8 +64,8 @@ def shortcut_webhook():
 def run_flask():
     port = int(os.environ.get('PORT', 8080)); flask_app.run(host='0.0.0.0', port=port)
 
-FREE_DELETE_DELAY_MINUTES, PAID_DELETE_DELAY_HOURS = 5, 24
-PAYMENT_EXPIRATION_MINUTES, APPROVAL_EXPIRATION_HOURS = 3, 24
+FREE_DELETE_DELAY_MINUTES, PAID_DELETE_DELAY_HOURS = 30, 24
+PAYMENT_EXPIRATION_MINUTES, APPROVAL_EXPIRATION_HOURS = 30, 24
 IST = pytz.timezone("Asia/Kolkata")
 
 try:
