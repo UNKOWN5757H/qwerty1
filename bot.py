@@ -1,5 +1,4 @@
-Here is the complete, corrected code. All the SyntaxError issues caused by un-commented section titles and horizontal lines have been fixed by turning them into proper comments (adding a # at the beginning).
-You can copy and paste this entire block into your bot.py file.
+
 # --- Files-Store-main/bot.py (VERSION 13.0 - EDIT LINK FEATURE & FINAL FIXES) ---
 
 # bot_v13.py (VERSION 13.0) — Production-ready, Motor async + APScheduler integration
