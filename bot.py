@@ -1,3 +1,5 @@
+Here is the complete, corrected code. All the SyntaxError issues caused by un-commented section titles and horizontal lines have been fixed by turning them into proper comments (adding a # at the beginning).
+You can copy and paste this entire block into your bot.py file.
 # --- Files-Store-main/bot.py (VERSION 13.0 - EDIT LINK FEATURE & FINAL FIXES) ---
 
 # bot_v13.py (VERSION 13.0) — Production-ready, Motor async + APScheduler integration
@@ -12,7 +14,7 @@
 
 # - Deploy notes: works with "python bot_v13.py" or use Gunicorn/UVicorn for Flask if needed
 
------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
 import os
 import logging
@@ -43,11 +45,11 @@ from apscheduler.jobstores.base import JobLookupError
 
 load_dotenv()
 
--------------------------
-
-Config from environment
-
--------------------------
+# -------------------------
+#
+# Config from environment
+#
+# -------------------------
 
 API_ID = int(os.environ.get("API_ID", "2468192"))
 API_HASH = os.environ.get("API_HASH", "4906b3f8f198ec0e24edb2c197677678")
@@ -66,22 +68,22 @@ APPROVAL_EXPIRATION_HOURS = int(os.environ.get("APPROVAL_EXPIRATION_HOURS", "24"
 IST = pytz.timezone("Asia/Kolkata")
 FLASK_PORT = int(os.environ.get("PORT", "8080"))
 
--------------------------
-
-Logging
-
--------------------------
+# -------------------------
+#
+# Logging
+#
+# -------------------------
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 # FIX: Use __name__ instead of undefined 'name'
 logger = logging.getLogger(__name__)
 
--------------------------
-
-Flask app (runs in separate thread)
-
--------------------------
+# -------------------------
+#
+# Flask app (runs in separate thread)
+#
+# -------------------------
 
 # FIX: Use __name__ instead of undefined 'name'
 flask_app = Flask(__name__)
@@ -134,11 +136,11 @@ def run_flask():
     logger.info(f"Starting Flask on 0.0.0.0:{FLASK_PORT}")
     flask_app.run(host="0.0.0.0", port=FLASK_PORT)
 
--------------------------
-
-MongoDB setup
-
--------------------------
+# -------------------------
+#
+# MongoDB setup
+#
+# -------------------------
 
 if not MONGO_URI:
     logger.error("MONGO_URI is not set. Exiting.")
@@ -159,29 +161,29 @@ payments_collection = db_async["pending_payments"]
 jobstores = {"default": MongoDBJobStore(database="file_link_bot", collection="scheduler_jobs", client=sync_mongo_client)}
 scheduler = BackgroundScheduler(jobstores=jobstores, timezone="Asia/Kolkata")
 
--------------------------
-
-Pyrogram client (bot)
-
--------------------------
+# -------------------------
+#
+# Pyrogram client (bot)
+#
+# -------------------------
 
 app = Client("FileLinkBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
--------------------------
-
-In-memory states
-
--------------------------
+# -------------------------
+#
+# In-memory states
+#
+# -------------------------
 
 user_sessions = {}   # user_id -> {'files': [Message,...], 'menu_msg_id': int, 'job': asyncio.Task}
 user_states = {}     # user_id -> {'state': ..., ...}
 EDIT_SESSIONS = {}   # batch_id -> {'owner_id': id, 'files': [log_msg_ids], 'edit_msg_id': int}
 
--------------------------
-
-Utility helpers
-
--------------------------
+# -------------------------
+#
+# Utility helpers
+#
+# -------------------------
 
 def generate_random_string(length: int = 10) -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
@@ -214,11 +216,11 @@ async def is_user_member(client: Client, user_id: int) -> bool:
 def sanitize_upi(upi: str) -> str:
     return upi.strip()
 
--------------------------
-
-Scheduler job wrappers (these schedule coroutines safely to bot loop)
-
--------------------------
+# -------------------------
+#
+# Scheduler job wrappers (these schedule coroutines safely to bot loop)
+#
+# -------------------------
 
 def schedule_coroutine(coro):
     # helper: run coroutine in bot loop
@@ -267,11 +269,11 @@ def expire_approval_job(payment_id: str, user_id: int, owner_id: int):
                 pass
     schedule_coroutine(task())
 
--------------------------
-
-UI texts & keyboard helpers
-
--------------------------
+# -------------------------
+#
+# UI texts & keyboard helpers
+#
+# -------------------------
 
 def get_start_text():
     return "Hey! I am PermaStore Bot 🤖\n\nSend Me Any File! And I'll Gives You A Permanent Shareable Link! Which Never EXPIRES."
@@ -306,11 +308,11 @@ def get_help_text_and_keyboard(user_id: int):
         return base_help + admin_extra, InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Start", callback_data="back_to_start")]])
     return base_help, InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Start", callback_data="back_to_start")]])
 
--------------------------
-
-Handlers
-
--------------------------
+# -------------------------
+#
+# Handlers
+#
+# -------------------------
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
@@ -458,11 +460,11 @@ async def set_mode_callback(client: Client, query: CallbackQuery):
     ])
     await query.message.edit_text(f"⚙️ Bot Settings\n\nMode Is Now **{new_mode.upper()}**.\nSelect A New Mode:", reply_markup=keyboard)
 
--------------------------
-
-UPI commands (Admin only)
-
--------------------------
+# -------------------------
+#
+# UPI commands (Admin only)
+#
+# -------------------------
 
 @app.on_message(filters.command(["setupi", "myupi"]) & filters.private & filters.user(ADMINS))
 async def upi_commands_handler(client: Client, message: Message):
@@ -479,11 +481,11 @@ async def upi_commands_handler(client: Client, message: Message):
         else:
             await message.reply("You Have Not Set A UPI ID Yet. Use /setupi To Save One.")
 
--------------------------
-
-File upload handlers (new batch creation)
-
--------------------------
+# -------------------------
+#
+# File upload handlers (new batch creation)
+#
+# -------------------------
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio), group=1)
 async def file_handler(client: Client, message: Message):
@@ -584,11 +586,11 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
         status_msg = await query.message.edit_text("__💰 **Set A Price For File!**\n\n__Please Send The Price For This Batch In INR **(e.g., `10`)**.__")
         user_states[user_id] = {"state": "waiting_for_price", "log_ids": log_message_ids, "batch_id": batch_id, "status_msgs": [status_msg.id]}
 
--------------------------
-
-Conversation handler for price, upi, editing flows
-
--------------------------
+# -------------------------
+#
+# Conversation handler for price, upi, editing flows
+#
+# -------------------------
 
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "help", "setupi", "myupi", "stats", "settings", "ban", "unban", "linkinfo", "editlink"]), group=1)
 async def conversation_handler(client: Client, message: Message):
@@ -647,11 +649,11 @@ async def conversation_handler(client: Client, message: Message):
             pass
         user_states.pop(user_id, None)
 
--------------------------
-
-Function to create paid batch
-
--------------------------
+# -------------------------
+#
+# Function to create paid batch
+#
+# -------------------------
 
 async def create_paid_batch_in_db(client: Client, message: Message, state_info: dict, upi_id: str):
     user_id = message.from_user.id
@@ -682,11 +684,11 @@ async def create_paid_batch_in_db(client: Client, message: Message, state_info: 
         user_states.pop(user_id, None)
         user_sessions.pop(user_id, None)
 
--------------------------
-
-Edit link feature
-
--------------------------
+# -------------------------
+#
+# Edit link feature
+#
+# -------------------------
 
 async def get_file_details(msg_id):
     try:
@@ -816,11 +818,11 @@ async def file_handler_for_editing(client: Client, message: Message):
                 logger.exception("file_handler_for_editing error")
                 await message.reply_text(f"❌ Could not add file: {e}")
 
--------------------------
-
-Payment & delivery flows (completed and hardened)
-
--------------------------
+# -------------------------
+#
+# Payment & delivery flows (completed and hardened)
+#
+# -------------------------
 
 async def process_link_click(client: Client, user_id: int, batch_id: str):
     """
@@ -1045,11 +1047,11 @@ async def payment_verification_callback(client: Client, query: CallbackQuery):
             pass
         await payments_collection.delete_one({"_id": payment_id})
 
--------------------------
-
-Delivery utility
-
--------------------------
+# -------------------------
+#
+# Delivery utility
+#
+# -------------------------
 
 async def send_files_from_batch(client: Client, user_id: int, batch_record: dict, delay_amount: int, delay_unit: str):
     """
@@ -1058,7 +1060,7 @@ async def send_files_from_batch(client: Client, user_id: int, batch_record: dict
     """
     await client.send_message(user_id, f"✅ Access Granted! You Are Receiving {len(batch_record['message_ids'])} Files.")
     all_sent_successfully = True
-    for msg_id in batch_record["message_ids"]:
+    for msg_id in batch_record['message_ids']:
         try:
             sent_file_msg = await client.copy_message(chat_id=user_id, from_chat_id=LOG_CHANNEL, message_id=msg_id)
             warning_text = f"\n\n\n__⚠️ IMPORTANT!\n\nThese Files Will Be Automatically Deleted In {delay_amount} {delay_unit}. Please Forward Them To Your Saved Messages Immediately.__"
@@ -1091,11 +1093,11 @@ async def send_files_from_batch(client: Client, user_id: int, batch_record: dict
                 pass
     return all_sent_successfully
 
--------------------------
-
-Automation helper (webhook auto-approve by unique amount)
-
--------------------------
+# -------------------------
+#
+# Automation helper (webhook auto-approve by unique amount)
+#
+# -------------------------
 
 async def _auto_approve_by_amount(unique_amount: str):
     payment_record = await payments_collection.find_one({"unique_amount": unique_amount})
@@ -1119,11 +1121,11 @@ async def _auto_approve_by_amount(unique_amount: str):
     result = await process_payment_approval(payment_id, approved_by="Automation 🤖")
     return {"status": "success", "message": result}
 
--------------------------
-
-Startup & Shutdown
-
--------------------------
+# -------------------------
+#
+# Startup & Shutdown
+#
+# -------------------------
 
 def start_background_services():
     # Start Flask thread
@@ -1163,3 +1165,4 @@ if __name__ == "__main__":
     app.run()
     # on exit (if any cleanup needed)
     logger.info("Bot stopped.")
+
