@@ -36,7 +36,7 @@ LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL"))
 UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMINS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',') if admin_id]
-PAYMENT_PAGE_URL = os.environ.get("PAYMENT_PAGE_URL", "https://psbpay.blogspot.com")
+PAYMENT_PAGE_URL = os.environ.get("PAYMENT_PAGE_URL", "https://t.me/Nikhil5757h")
 AUTOMATION_SECRET = os.environ.get("AUTOMATION_SECRET")
 
 flask_app = Flask(__name__)
