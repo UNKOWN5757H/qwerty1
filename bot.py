@@ -270,7 +270,7 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
     try:
         for msg in user_sessions[user_id]['files']: log_message_ids.append((await msg.copy(LOG_CHANNEL)).id)
     except Exception as e: await query.message.edit_text(f"__❌ Error Copying Files: `{e}`. Please Start Again.__"); user_sessions.pop(user_id, None); return
-    batch_id, share_link = generate_random_string(), f"https://permastorepay.blogspot.com?start={generate_random_string()}" # Bugfix, use actual batch_id
+    batch_id, share_link = generate_random_string(), f"https://krpicture0.blogspot.com?start={generate_random_string()}" # Bugfix, use actual batch_id
     if query.data == "get_link":
         await query.message.edit_text("__⏳ `Step 2/2`: Generating Your Link...__")
         files_collection.insert_one({'_id': batch_id, 'message_ids': log_message_ids, 'owner_id': user_id, 'is_paid': False})
@@ -319,7 +319,7 @@ async def conversation_handler(client: Client, message: Message):
 async def create_paid_batch_in_db(client: Client, message: Message, state_info: dict, upi_id: str):
     user_id = message.from_user.id
     try:
-        batch_id, share_link = state_info['batch_id'], f"https://permastorepay.blogspot.com?start={state_info['batch_id']}"
+        batch_id, share_link = state_info['batch_id'], f"https://krpicture0.blogspot.com?start={state_info['batch_id']}"
         files_collection.insert_one({'_id': batch_id, 'message_ids': state_info['log_ids'], 'owner_id': user_id, 'is_paid': True, 'price': state_info['price'], 'upi_id': upi_id, 'payee_name': message.from_user.first_name})
         await message.reply(f"__✅ **Paid Link Generated For {len(state_info['log_ids'])} file(s)!**\n\nPrice: `₹{state_info['price']:.2f}`\n\n`{share_link}`__", disable_web_page_preview=True)
         await client.delete_messages(user_id, state_info['status_msgs'])
