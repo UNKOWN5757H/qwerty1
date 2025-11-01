@@ -51,16 +51,16 @@ Config from environment
 
 -------------------------
 
-API_ID = int(os.environ.get("API_ID", "0"))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-MONGO_URI = os.environ.get("MONGO_URI", "")
-LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "0"))
-UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "")  # channel username without @
-ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
+API_ID = int(os.environ.get("API_ID", "2468192"))
+API_HASH = os.environ.get("API_HASH", "4906b3f8f198ec0e24edb2c197677678")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7845953013:AAEwrzoPYM_5CGevF8n6xEqwbOqncoqnc6g")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://Rashmika1:Rashmika@rashmika1.sbnf8wy.mongodb.net/?retryWrites=true&w=majority&appName=Rashmika1")
+LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1002395310064"))
+UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "linkz_ki_duniyaa")  # channel username without @
+ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "2098589219")
 ADMINS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip().isdigit()]
 PAYMENT_PAGE_URL = os.environ.get("PAYMENT_PAGE_URL", "https://t.me/Nikhil5757h")
-AUTOMATION_SECRET = os.environ.get("AUTOMATION_SECRET", None)
+AUTOMATION_SECRET = os.environ.get("AUTOMATION_SECRET", "payment4telegram")
 FREE_DELETE_DELAY_MINUTES = int(os.environ.get("FREE_DELETE_DELAY_MINUTES", "30"))
 PAID_DELETE_DELAY_HOURS = int(os.environ.get("PAID_DELETE_DELAY_HOURS", "24"))
 PAYMENT_EXPIRATION_MINUTES = int(os.environ.get("PAYMENT_EXPIRATION_MINUTES", "30"))
