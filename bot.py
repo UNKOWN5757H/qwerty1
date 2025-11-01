@@ -1,16 +1,16 @@
 # --- Files-Store-main/bot.py (VERSION 13.0 - EDIT LINK FEATURE & FINAL FIXES) ---
 
-bot_v13.py (VERSION 13.0) — Production-ready, Motor async + APScheduler integration
+# bot_v13.py (VERSION 13.0) — Production-ready, Motor async + APScheduler integration
 
-- Uses motor (AsyncIOMotorClient) for async DB operations used inside asyncio coroutines
+# - Uses motor (AsyncIOMotorClient) for async DB operations used inside asyncio coroutines
 
-- Keeps pymongo MongoClient for APScheduler MongoDBJobStore (sync)
+# - Keeps pymongo MongoClient for APScheduler MongoDBJobStore (sync)
 
-- Supports admin manual approval + webhook automation approval
+# - Supports admin manual approval + webhook automation approval
 
-- Flask endpoints: /, /ping, /status, /api/shortcut
+# - Flask endpoints: /, /ping, /status, /api/shortcut
 
-- Deploy notes: works with "python bot_v13.py" or use Gunicorn/UVicorn for Flask if needed
+# - Deploy notes: works with "python bot_v13.py" or use Gunicorn/UVicorn for Flask if needed
 
 -----------------------------------------------------------------------------
 
