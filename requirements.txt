@@ -1,0 +1,7 @@
+pyrogram
+tgcrypto
+pymongo[srv]
+python-dotenv
+flask
+APScheduler==3.10.4
+pytz
