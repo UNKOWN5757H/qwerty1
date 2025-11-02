@@ -1,7 +1,9 @@
-# bot_v13.py (VERSION 13.3) — Production-ready, Motor async + APScheduler integration
-# - Fixes critical syntax errors causing application crashes on startup.
-# - Implements a more efficient file delivery and deletion mechanism.
-# - Retains the fix for the "I Have Joined" button functionality.
+# bot_v14.py (VERSION 14.0) — Production-ready, Database-backed State
+# - Fixes critical in-memory state loss on restart by moving all user
+#   sessions (batching, convos, edits) to MongoDB.
+# - Fixes payment race condition with a unique DB index and retry logic.
+# - Fixes Flask webhook blocking by making it non-blocking (HTTP 202).
+# - Hardens the async coroutine scheduler.
 # -----------------------------------------------------------------------------
 
 import os
@@ -19,8 +21,9 @@ from pyrogram import Client, filters, enums, idle
 from pyrogram.errors import UserNotParticipant, FloodWait, UserIsBlocked, InputUserDeactivated, MessageNotModified
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 
-# Sync pymongo for APScheduler jobstore
-from pymongo import MongoClient
+# Sync pymongo for APScheduler jobstore and index creation
+from pymongo import MongoClient, IndexModel
+from pymongo.errors import DuplicateKeyError
 
 # Async motor for bot DB ops
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -106,15 +109,13 @@ def shortcut_webhook():
         return jsonify({"status": "info", "message": "No valid amount found in SMS"}), 200
 
     unique_amount = amount_match.group(1).replace(",", "")
-    # Find pending payment with that unique_amount and auto-approve if owner is admin
+    
+    # --- FIX 4: Run auto-approval in the background and return 202 Accepted ---
+    # This prevents the webhook from blocking the Flask server.
     coro = _auto_approve_by_amount(unique_amount)
-    future = asyncio.run_coroutine_threadsafe(coro, app.loop)
-    try:
-        result = future.result(timeout=20)
-        return jsonify(result), 200
-    except Exception as e:
-        logger.exception("Automation webhook error")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    schedule_coroutine(coro)
+    
+    return jsonify({"status": "accepted", "message": "Automation job scheduled"}), 202
 
 def run_flask():
     logger.info(f"Starting Flask on 0.0.0.0:{FLASK_PORT}")
@@ -138,8 +139,43 @@ users_collection = db_async["users"]
 settings_collection = db_async["settings"]
 payments_collection = db_async["pending_payments"]
 
+# --- FIX 1: New collections for database-backed state ---
+# These replace the in-memory dicts (user_sessions, user_states, EDIT_SESSIONS)
+sessions_collection = db_async["user_sessions"]
+states_collection = db_async["user_states"]
+edit_sessions_collection = db_async["edit_sessions"]
+# --------------------------------------------------------
+
 jobstores = {"default": MongoDBJobStore(database="file_link_bot", collection="scheduler_jobs", client=sync_mongo_client)}
 scheduler = BackgroundScheduler(jobstores=jobstores, timezone="Asia/Kolkata")
+
+async def setup_database_indexes():
+    """Creates required indexes on startup, including TTLs for state."""
+    logger.info("Setting up database indexes...")
+    try:
+        # --- FIX 2: Unique index for payment race condition ---
+        await payments_collection.create_indexes([
+            IndexModel("unique_amount", unique=True, sparse=True)
+        ])
+        
+        # --- FIX 1: TTL (Time-To-Live) indexes for state collections ---
+        # Expire file-batching sessions after 1 hour of inactivity
+        await sessions_collection.create_indexes([
+            IndexModel("last_updated", expireAfterSeconds=3600)
+        ])
+        # Expire conversational states (like 'waiting_for_price') after 15 mins
+        await states_collection.create_indexes([
+            IndexModel("last_updated", expireAfterSeconds=900)
+        ])
+        # Expire /editlink sessions after 2 hours of inactivity
+        await edit_sessions_collection.create_indexes([
+            IndexModel("last_updated", expireAfterSeconds=7200)
+        ])
+        
+        logger.info("Database indexes are set up.")
+    except Exception as e:
+        logger.error(f"Failed to create indexes: {e}")
+        raise
 
 # -------------------------
 #
@@ -151,13 +187,14 @@ app = Client("FileLinkBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKE
 
 # -------------------------
 #
-# In-memory states
+# In-memory states (REMOVED)
+#
+# --- FIX 1: All state is now in MongoDB ---
+# user_sessions = {}   # REPLACED by sessions_collection
+# user_states = {}     # REPLACED by states_collection
+# EDIT_SESSIONS = {}   # REPLACED by edit_sessions_collection
 #
 # -------------------------
-
-user_sessions = {}   # user_id -> {'files': [Message,...], 'menu_msg_id': int, 'job': asyncio.Task}
-user_states = {}     # user_id -> {'state':...,...}
-EDIT_SESSIONS = {}   # batch_id -> {'owner_id': id, 'files': [log_msg_ids], 'edit_msg_id': int}
 
 # -------------------------
 #
@@ -197,11 +234,12 @@ def sanitize_upi(upi: str) -> str:
     return upi.strip()
 
 def schedule_coroutine(coro):
-    if app.is_connected:
+    # --- FIX 3: Hardened async scheduler helper ---
+    if app.is_connected and app.loop:
         return asyncio.run_coroutine_threadsafe(coro, app.loop)
     else:
-        loop = asyncio.get_event_loop()
-        return asyncio.run_coroutine_threadsafe(coro, loop)
+        logger.warning("Bot is not connected or loop is not available. Coroutine scheduling skipped.")
+        return None
 
 def delete_message_job(chat_id: int, message_ids: list):
     async def task():
@@ -292,16 +330,19 @@ def get_help_text_and_keyboard(user_id: int):
 async def start_handler(client: Client, message: Message):
     await add_user_to_db(message)
     user_id = message.from_user.id
-    # clear existing session safely
-    if user_id in user_sessions:
+    
+    # --- FIX 1: Clear existing session from DB ---
+    session = await sessions_collection.find_one_and_delete({"_id": user_id})
+    if session:
         try:
-            menu_msg_id = user_sessions[user_id].get("menu_msg_id")
+            menu_msg_id = session.get("menu_msg_id")
             if menu_msg_id:
                 await client.delete_messages(user_id, menu_msg_id)
         except Exception:
             pass
-        user_sessions.pop(user_id, None)
-        user_states.pop(user_id, None)
+    # Clear any pending conversational state
+    await states_collection.delete_one({"_id": user_id})
+    # ----------------------------------------------
 
     if len(message.command) > 1:
         batch_id = message.command[1]
@@ -357,7 +398,8 @@ async def navigation_callbacks(client: Client, query: CallbackQuery):
 async def close_message_callback(client: Client, query: CallbackQuery):
     try:
         await query.message.delete()
-        user_sessions.pop(query.from_user.id, None)
+        # --- FIX 1: Clear session from DB ---
+        await sessions_collection.delete_one({"_id": query.from_user.id})
     except Exception as e:
         logger.warning(f"close_msg failed: {e}")
         await query.answer("Could not delete message.", show_alert=True)
@@ -459,7 +501,16 @@ async def upi_commands_handler(client: Client, message: Message):
     user_id = message.from_user.id
     command = message.command[0].lower()
     if command == "setupi":
-        user_states[user_id] = {"state": "waiting_for_new_upi", "status_msgs": [message.id]}
+        # --- FIX 1: Save state to DB ---
+        await states_collection.update_one(
+            {"_id": user_id},
+            {"$set": {
+                "state": "waiting_for_new_upi", 
+                "status_msgs": [message.id], 
+                "last_updated": datetime.now(timezone.utc)
+            }},
+            upsert=True
+        )
         await message.reply("Please Send Your UPI ID To Save Or Update It.\nExample: `yourname@upi`")
     elif command == "myupi":
         user_doc = await users_collection.find_one({"_id": user_id})
@@ -479,34 +530,41 @@ async def file_handler(client: Client, message: Message):
     user_id = message.from_user.id
     user_doc = await users_collection.find_one({"_id": user_id})
     bot_mode = await get_bot_mode()
+    
     if user_doc and user_doc.get("banned", False):
         await message.reply("❌ You are banned.\nYou are no longer allowed to use this bot.")
         return
     if bot_mode == "private" and user_id not in ADMINS:
         await message.reply("😔 Sorry! Only Admins Are Allowed To Upload Files At The Moment.")
         return
-    if user_id in user_states:
-        return
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {"files": [], "menu_msg_id": None, "job": None}
     
-    user_sessions[user_id]["files"].append(message)
-    if user_sessions[user_id].get("job"):
-        try:
-            user_sessions[user_id]["job"].cancel()
-        except Exception:
-            pass
-
-    async def _update_batch_menu_job():
-        await asyncio.sleep(0.75)
-        await update_batch_menu(client, user_id, message)
-
-    user_sessions[user_id]["job"] = asyncio.create_task(_update_batch_menu_job())
+    # --- FIX 1: Check for conversational state in DB ---
+    if await states_collection.find_one({"_id": user_id}):
+        return # User is in another conversation, ignore files
+    
+    # --- FIX 1: Add file to session in DB ---
+    # We store message IDs, not the full pyrogram object
+    await sessions_collection.update_one(
+        {"_id": user_id},
+        {
+            "$push": {"file_msg_ids": message.id},
+            "$set": {"last_updated": datetime.now(timezone.utc)}
+        },
+        upsert=True
+    )
+    
+    # Removed the 0.75s debounce task for simplicity and DB-state compatibility.
+    # The menu will now update instantly on every file.
+    await update_batch_menu(client, user_id, message)
 
 async def update_batch_menu(client: Client, user_id: int, last_message: Message):
-    if user_id not in user_sessions:
+    # --- FIX 1: Read session from DB ---
+    session = await sessions_collection.find_one({"_id": user_id})
+    if not session:
+        logger.warning(f"No session found for user {user_id} in update_batch_menu")
         return
-    file_count = len(user_sessions[user_id]["files"])
+
+    file_count = len(session.get("file_msg_ids", []))
     text = f"✅ Batch Updated! You Have **{file_count}** Files In The Queue. What's Next?"
     buttons = [
         [InlineKeyboardButton("🔗 Get Free Link", callback_data="get_link"),
@@ -515,21 +573,37 @@ async def update_batch_menu(client: Client, user_id: int, last_message: Message)
     if user_id in ADMINS:
         buttons[0].append(InlineKeyboardButton("💰 Set Price & Sell", callback_data="set_price"))
     keyboard = InlineKeyboardMarkup(buttons)
-    old_menu_id = user_sessions[user_id].get("menu_msg_id")
+    
+    old_menu_id = session.get("menu_msg_id")
     if old_menu_id:
         try:
             await client.delete_messages(user_id, old_menu_id)
         except Exception:
             pass
+            
     new_menu_msg = await last_message.reply_text(text, reply_markup=keyboard, quote=True)
-    user_sessions[user_id]["menu_msg_id"] = new_menu_msg.id
+    
+    # --- FIX 1: Save new menu ID to DB session ---
+    await sessions_collection.update_one(
+        {"_id": user_id},
+        {"$set": {
+            "menu_msg_id": new_menu_msg.id, 
+            "last_updated": datetime.now(timezone.utc)
+        }}
+    )
 
 @app.on_callback_query(filters.regex("^(get_link|add_more|set_price)$"))
 async def batch_options_callback(client: Client, query: CallbackQuery):
     user_id = query.from_user.id
-    if user_id not in user_sessions or not user_sessions[user_id]["files"]:
+    
+    # --- FIX 1: Get session from DB ---
+    session = await sessions_collection.find_one({"_id": user_id})
+    if not session or not session.get("file_msg_ids"):
         await query.answer("Your Session Has Expired. Please Send Files Again.", show_alert=True)
+        try: await query.message.delete()
+        except Exception: pass
         return
+        
     if query.data == "set_price" and user_id not in ADMINS:
         await query.answer("❗️ This feature is available for Admins only.", show_alert=True)
         return
@@ -538,19 +612,30 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
         return
 
     await query.message.edit_text("__⏳ `Step 1/2`: Copying Files To Secure Storage...__")
+    
     log_message_ids = []
+    file_msg_ids = session.get("file_msg_ids", [])
+    
     try:
-        for msg in user_sessions[user_id]["files"]:
+        # --- FIX 1: Get messages from chat history using saved IDs ---
+        messages_to_copy = await client.get_messages(user_id, file_msg_ids)
+        if not isinstance(messages_to_copy, list): # Handle single message case
+            messages_to_copy = [messages_to_copy]
+
+        for msg in messages_to_copy:
             copied = await msg.copy(LOG_CHANNEL)
             log_message_ids.append(copied.id)
+            
     except Exception as e:
         logger.exception("Error copying files to log channel")
         await query.message.edit_text(f"__❌ Error Copying Files: `{e}`. Please Start Again.__")
-        user_sessions.pop(user_id, None)
+        # Clear the bad session
+        await sessions_collection.delete_one({"_id": user_id})
         return
 
     batch_id = generate_random_string(12)
-    share_link = f"https://t.me/{(await app.get_me()).username}?start={batch_id}"
+    bot_me = await app.get_me()
+    share_link = f"https://t.me/{bot_me.username}?start={batch_id}"
 
     if query.data == "get_link":
         await query.message.edit_text("__⏳ `Step 2/2`: Generating Your Link...__")
@@ -562,10 +647,23 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
             "created_at": datetime.now(timezone.utc),
         })
         await query.message.edit_text(f"__✅ **Free Link Generated for {len(log_message_ids)} file(s)!**\n\n`{share_link}`__", disable_web_page_preview=True)
-        user_sessions.pop(user_id, None)
+        # --- FIX 1: Clear session from DB ---
+        await sessions_collection.delete_one({"_id": user_id})
+        
     elif query.data == "set_price":
         status_msg = await query.message.edit_text("__💰 **Set A Price For File!**\n\n__Please Send The Price For This Batch In INR **(e.g., `10`)**.__")
-        user_states[user_id] = {"state": "waiting_for_price", "log_ids": log_message_ids, "batch_id": batch_id, "status_msgs": [status_msg.id]}
+        # --- FIX 1: Save conversational state to DB ---
+        await states_collection.update_one(
+            {"_id": user_id},
+            {"$set": {
+                "state": "waiting_for_price", 
+                "log_ids": log_message_ids, 
+                "batch_id": batch_id, 
+                "status_msgs": [status_msg.id],
+                "last_updated": datetime.now(timezone.utc)
+            }},
+            upsert=True
+        )
 
 # -------------------------
 #
@@ -576,56 +674,87 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "help", "setupi", "myupi", "stats", "settings", "ban", "unban", "linkinfo", "editlink"]), group=1)
 async def conversation_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    if user_id not in user_states:
+    
+    # --- FIX 1: Get conversational state from DB ---
+    state_info = await states_collection.find_one({"_id": user_id})
+    if not state_info:
         return
-    state_info = user_states[user_id]
+        
     state = state_info.get("state")
-    if "status_msgs" in state_info:
-        state_info["status_msgs"].append(message.id)
+    current_status_msgs = state_info.get("status_msgs", [])
+    current_status_msgs.append(message.id)
 
     if state == "waiting_for_price":
         try:
             price = float(message.text.strip())
             if price <= 0:
                 raise ValueError
-            state_info["price"] = price
+            
             user_doc = await users_collection.find_one({"_id": user_id})
             if user_doc and user_doc.get("upi_id"):
                 upi_id = user_doc["upi_id"]
                 status_msg = await message.reply(f"__✅ Price: `₹{price:.2f}` | UPI: `{upi_id}`\n⏳ Finalizing link...__")
-                state_info.setdefault("status_msgs", []).append(status_msg.id)
-                await create_paid_batch_in_db(client, message, state_info, upi_id)
+                current_status_msgs.append(status_msg.id)
+                # Pass price and status_msgs to creation function
+                await create_paid_batch_in_db(client, message, state_info, upi_id, price, current_status_msgs)
             else:
-                state_info["state"] = "waiting_for_upi"
                 status_msg = await message.reply(f"__✅ Price: `₹{price:.2f}`.\n\nNow Send Your UPI ID (It Will Be Saved).__")
-                state_info.setdefault("status_msgs", []).append(status_msg.id)
+                current_status_msgs.append(status_msg.id)
+                # --- FIX 1: Update state in DB ---
+                await states_collection.update_one(
+                    {"_id": user_id},
+                    {"$set": {
+                        "state": "waiting_for_upi",
+                        "price": price, # Save price to state
+                        "status_msgs": current_status_msgs,
+                        "last_updated": datetime.now(timezone.utc)
+                    }}
+                )
         except Exception:
             status_msg = await message.reply("__**Invalid Price.** Send A Number Like `10`.__")
-            state_info.setdefault("status_msgs", []).append(status_msg.id)
+            current_status_msgs.append(status_msg.id)
+            # --- FIX 1: Update state in DB (to save status_msg ID) ---
+            await states_collection.update_one(
+                {"_id": user_id},
+                {"$set": {"status_msgs": current_status_msgs, "last_updated": datetime.now(timezone.utc)}}
+            )
 
     elif state == "waiting_for_upi":
         upi_id = sanitize_upi(message.text)
         if not re.match(r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$", upi_id):
             status_msg = await message.reply("__Invalid UPI ID format. Try again.__")
-            state_info.setdefault("status_msgs", []).append(status_msg.id)
+            current_status_msgs.append(status_msg.id)
+            # --- FIX 1: Update state in DB ---
+            await states_collection.update_one(
+                {"_id": user_id},
+                {"$set": {"status_msgs": current_status_msgs, "last_updated": datetime.now(timezone.utc)}}
+            )
             return
+            
         await users_collection.update_one({"_id": user_id}, {"$set": {"upi_id": upi_id}}, upsert=True)
         status_msg = await message.reply(f"__✅ UPI ID `{upi_id}` Saved.\n⏳ Finalizing Link...__")
-        state_info.setdefault("status_msgs", []).append(status_msg.id)
-        await create_paid_batch_in_db(client, message, state_info, upi_id)
+        current_status_msgs.append(status_msg.id)
+        
+        price = state_info.get("price") # Get price from state
+        await create_paid_batch_in_db(client, message, state_info, upi_id, price, current_status_msgs)
 
     elif state == "waiting_for_new_upi":
         upi_id = sanitize_upi(message.text)
         if not re.match(r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$", upi_id):
             await message.reply("__Invalid UPI ID Format. Try Again.__")
             return
+            
         await users_collection.update_one({"_id": user_id}, {"$set": {"upi_id": upi_id}}, upsert=True)
         await message.reply(f"__✅ Success! Your UPI ID Is Updated To: `{upi_id}`__")
+        
         try:
-            await client.delete_messages(user_id, state_info.get("status_msgs", []))
+            # Delete all status messages
+            await client.delete_messages(user_id, current_status_msgs)
         except Exception:
             pass
-        user_states.pop(user_id, None)
+        
+        # --- FIX 1: Clear state from DB ---
+        await states_collection.delete_one({"_id": user_id})
 
 # -------------------------
 #
@@ -633,32 +762,41 @@ async def conversation_handler(client: Client, message: Message):
 #
 # -------------------------
 
-async def create_paid_batch_in_db(client: Client, message: Message, state_info: dict, upi_id: str):
+# --- FIX 1: Modified function signature ---
+async def create_paid_batch_in_db(client: Client, message: Message, state_info: dict, upi_id: str, price: float, status_msgs: list):
     user_id = message.from_user.id
     try:
         batch_id = state_info["batch_id"]
-        share_link = f"https://t.me/{(await app.get_me()).username}?start={batch_id}"
+        log_ids = state_info["log_ids"]
+        bot_me = await app.get_me()
+        share_link = f"https://t.me/{bot_me.username}?start={batch_id}"
+        
         await files_collection.insert_one({
             "_id": batch_id,
-            "message_ids": state_info["log_ids"],
+            "message_ids": log_ids,
             "owner_id": user_id,
             "is_paid": True,
-            "price": float(state_info["price"]),
+            "price": price, # Use price from argument
             "upi_id": upi_id,
             "payee_name": message.from_user.first_name,
             "created_at": datetime.now(timezone.utc),
         })
-        await message.reply(f"✅ Paid Link Generated For {len(state_info['log_ids'])} file(s)!\n\nPrice: **₹{state_info['price']:.2f}**\n\n`{share_link}`", disable_web_page_preview=True)
+        
+        await message.reply(f"✅ Paid Link Generated For {len(log_ids)} file(s)!\n\nPrice: **₹{price:.2f}**\n\n`{share_link}`", disable_web_page_preview=True)
+        
         try:
-            await client.delete_messages(user_id, state_info.get("status_msgs", []))
+            # Delete all status messages
+            await client.delete_messages(user_id, status_msgs)
         except Exception:
             pass
+            
     except Exception as e:
         logger.exception("create_paid_batch_in_db error")
         await message.reply(f"❌ An error occurred: `{e}`")
     finally:
-        user_states.pop(user_id, None)
-        user_sessions.pop(user_id, None)
+        # --- FIX 1: Clear state and session from DB ---
+        await states_collection.delete_one({"_id": user_id})
+        await sessions_collection.delete_one({"_id": user_id})
 
 # -------------------------
 #
@@ -682,8 +820,12 @@ async def get_file_details(msg_id):
         logger.warning(f"Could not get details for msg_id {msg_id}: {e}")
         return "DELETED/UNAVAILABLE FILE", "N/A"
 
+# --- FIX 1: Function must be async to read from DB ---
 async def generate_edit_menu(batch_id: str):
-    batch_files = EDIT_SESSIONS.get(batch_id, {}).get("files", [])
+    # Read session from DB
+    session = await edit_sessions_collection.find_one({"_id": batch_id}) or {}
+    batch_files = session.get("files", [])
+    
     text = f"✍️ Editing Link: **{batch_id}**\n\n__You have {len(batch_files)} files in this batch. You can delete files or add more.__"
     buttons = []
     for i, msg_id in enumerate(batch_files):
@@ -720,16 +862,37 @@ async def edit_link_command(client: Client, message: Message):
         await message.reply("__🔒 You can only edit links that you have created.__")
         return
 
-    EDIT_SESSIONS[batch_id] = {
-        "owner_id": user_id,
-        "files": list(batch_record.get("message_ids", [])),
-        "edit_msg_id": None
-    }
-    user_states[user_id] = {"state": "editing_link", "batch_id": batch_id}
+    # --- FIX 1: Create edit session and user state in DB ---
+    await edit_sessions_collection.update_one(
+        {"_id": batch_id},
+        {"$set": {
+            "owner_id": user_id,
+            "files": list(batch_record.get("message_ids", [])),
+            "edit_msg_id": None, # Will be set in a moment
+            "last_updated": datetime.now(timezone.utc)
+        }},
+        upsert=True
+    )
+    
+    await states_collection.update_one(
+        {"_id": user_id},
+        {"$set": {
+            "state": "editing_link", 
+            "batch_id": batch_id, 
+            "last_updated": datetime.now(timezone.utc)
+        }},
+        upsert=True
+    )
+    # ----------------------------------------------------
 
     text, keyboard = await generate_edit_menu(batch_id)
     edit_msg = await message.reply(text, reply_markup=keyboard)
-    EDIT_SESSIONS[batch_id]["edit_msg_id"] = edit_msg.id
+    
+    # --- FIX 1: Save the menu message ID to the DB session ---
+    await edit_sessions_collection.update_one(
+        {"_id": batch_id},
+        {"$set": {"edit_msg_id": edit_msg.id}}
+    )
 
 @app.on_callback_query(filters.regex("^edit_"))
 async def edit_link_callbacks(client: Client, query: CallbackQuery):
@@ -738,7 +901,8 @@ async def edit_link_callbacks(client: Client, query: CallbackQuery):
     action = parts[1]
     batch_id = parts[2]
 
-    session = EDIT_SESSIONS.get(batch_id)
+    # --- FIX 1: Get edit session from DB ---
+    session = await edit_sessions_collection.find_one({"_id": batch_id})
     if not session or session.get("owner_id") != user_id:
         await query.answer("This edit session is invalid or has expired.", show_alert=True)
         return
@@ -746,40 +910,72 @@ async def edit_link_callbacks(client: Client, query: CallbackQuery):
     if action == "delete":
         try:
             idx = int(parts[3])
-            del EDIT_SESSIONS[batch_id]["files"][idx]
+            current_files = session.get("files", [])
+            del current_files[idx]
+            # --- FIX 1: Update file list in DB ---
+            await edit_sessions_collection.update_one(
+                {"_id": batch_id}, 
+                {"$set": {"files": current_files, "last_updated": datetime.now(timezone.utc)}}
+            )
             await query.answer("✅ File removed.")
+            
             text, keyboard = await generate_edit_menu(batch_id)
             await query.message.edit_text(text, reply_markup=keyboard)
         except (ValueError, IndexError):
             await query.answer("Could not delete this file. It may have already been removed.", show_alert=True)
+            
     elif action == "add":
         await query.answer("✅ OK. Send me more files to add to this batch. When you are done, click 'Save Changes'.", show_alert=True)
-        user_states[user_id] = {"state": "editing_adding_files", "batch_id": batch_id}
+        # --- FIX 1: Set user state in DB ---
+        await states_collection.update_one(
+            {"_id": user_id}, 
+            {"$set": {"state": "editing_adding_files", "batch_id": batch_id, "last_updated": datetime.now(timezone.utc)}}, 
+            upsert=True
+        )
+        
     elif action == "cancel":
-        EDIT_SESSIONS.pop(batch_id, None)
-        user_states.pop(user_id, None)
+        # --- FIX 1: Delete session and state from DB ---
+        await edit_sessions_collection.delete_one({"_id": batch_id})
+        await states_collection.delete_one({"_id": user_id})
         await query.message.edit_text("__❌ Edit cancelled.__")
+        
     elif action == "save":
-        new_file_list = EDIT_SESSIONS[batch_id]["files"]
+        new_file_list = session.get("files", [])
         if not new_file_list:
             await query.answer("❗️ You cannot save an empty link. Add at least one file.", show_alert=True)
             return
+            
         await files_collection.update_one({"_id": batch_id}, {"$set": {"message_ids": new_file_list}})
-        EDIT_SESSIONS.pop(batch_id, None)
-        user_states.pop(user_id, None)
+        
+        # --- FIX 1: Delete session and state from DB ---
+        await edit_sessions_collection.delete_one({"_id": batch_id})
+        await states_collection.delete_one({"_id": user_id})
+        
         await query.message.edit_text(f"__✅ **Link `{batch_id}` updated successfully!** It now contains **{len(new_file_list)}** files.__")
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio), group=2)
 async def file_handler_for_editing(client: Client, message: Message):
     user_id = message.from_user.id
-    state = user_states.get(user_id, {}).get("state")
+    
+    # --- FIX 1: Get user state from DB ---
+    user_state = await states_collection.find_one({"_id": user_id})
+    state = user_state.get("state") if user_state else None
+    
     if state == "editing_adding_files":
-        batch_id = user_states[user_id]["batch_id"]
-        if batch_id in EDIT_SESSIONS:
+        batch_id = user_state["batch_id"]
+        
+        # --- FIX 1: Get edit session from DB ---
+        edit_session = await edit_sessions_collection.find_one({"_id": batch_id})
+        if edit_session:
             try:
                 copied = await message.copy(LOG_CHANNEL)
-                EDIT_SESSIONS[batch_id]["files"].append(copied.id)
-                edit_msg_id = EDIT_SESSIONS[batch_id]["edit_msg_id"]
+                # --- FIX 1: Add new file ID to DB ---
+                await edit_sessions_collection.update_one(
+                    {"_id": batch_id},
+                    {"$push": {"files": copied.id}, "$set": {"last_updated": datetime.now(timezone.utc)}}
+                )
+                
+                edit_msg_id = edit_session["edit_msg_id"]
                 text, keyboard = await generate_edit_menu(batch_id)
                 await client.edit_message_text(user_id, edit_msg_id, text, reply_markup=keyboard)
                 await message.reply_text("✅ File added to the edit session.", quote=True)
@@ -803,34 +999,37 @@ async def process_link_click(client: Client, user_id: int, batch_id: str):
         await send_files_from_batch(client, user_id, batch_record, FREE_DELETE_DELAY_MINUTES, "Minutes")
         return
 
+    # --- FIX 2: Payment Race Condition Fix ---
     base_price = float(batch_record.get("price", 0))
-    pending_cursor = payments_collection.find({}, {"unique_amount": 1})
-    pending_amounts = {p["unique_amount"] async for p in pending_cursor}
     unique_amount_str = None
-    for i in range(1, 100):
-        temp_amount = f"{base_price + (i / 100.0):.2f}"
-        if temp_amount not in pending_amounts:
-            unique_amount_str = temp_amount
-            break
-    if not unique_amount_str:
-        logger.warning(f"All 99 slots taken for base {base_price}, searching extended.")
-        for i in range(100, 500):
-            temp_amount = f"{base_price + (i / 100.0):.2f}"
-            if temp_amount not in pending_amounts:
-                unique_amount_str = temp_amount
-                break
-    if not unique_amount_str:
-        await client.send_message(user_id, "__🚦 Sorry, the server is busy. Please try again in a minute.__")
-        return
-
     payment_id = generate_random_string(16)
-    await payments_collection.insert_one({
-        "_id": payment_id,
-        "batch_id": batch_id,
-        "buyer_id": user_id,
-        "unique_amount": unique_amount_str,
-        "created_at": datetime.now(timezone.utc)
-    })
+
+    # Try to insert a unique payment record, handling race conditions
+    for i in range(1, 100): # Try up to 99 variations (e.g., .01 to .99)
+        temp_amount = f"{base_price + (i / 100.0):.2f}"
+        try:
+            # Try to insert. This will fail if 'unique_amount' is already taken
+            # due to the unique index we created.
+            await payments_collection.insert_one({
+                "_id": payment_id,
+                "batch_id": batch_id,
+                "buyer_id": user_id,
+                "unique_amount": temp_amount,
+                "created_at": datetime.now(timezone.utc)
+            })
+            unique_amount_str = temp_amount # Success!
+            break # Exit the loop
+        except DuplicateKeyError:
+            continue # This amount was taken (race condition), try the next one
+        except Exception as e:
+            logger.error(f"Error inserting payment record: {e}")
+            break # A different error occurred
+    
+    if not unique_amount_str:
+        # This happens if all 99 slots are full or an error occurred
+        await client.send_message(user_id, "__🚦 Sorry, the server is very busy. Please try again in a minute.__")
+        return
+    # --- End of Fix 2 ---
 
     run_time = datetime.now(IST) + timedelta(minutes=PAYMENT_EXPIRATION_MINUTES)
     try:
@@ -1046,19 +1245,26 @@ async def send_files_from_batch(client: Client, user_id: int, batch_record: dict
 async def _auto_approve_by_amount(unique_amount: str):
     payment_record = await payments_collection.find_one({"unique_amount": unique_amount})
     if not payment_record:
+        logger.info(f"Automation: No pending payment with amount {unique_amount}.")
         return {"status": "info", "message": "No pending payment with that amount."}
+    
     batch_record = await files_collection.find_one({"_id": payment_record["batch_id"]})
     if not batch_record:
         await payments_collection.delete_one({"_id": payment_record["_id"]})
+        logger.warning(f"Automation: Batch {payment_record['batch_id']} not found; payment removed.")
         return {"status": "error", "message": "Batch not found; payment removed."}
 
     owner_doc = await users_collection.find_one({"_id": batch_record["owner_id"]})
     if not owner_doc:
+        logger.warning(f"Automation: Owner {batch_record['owner_id']} not in DB.")
         return {"status": "info", "message": "Owner not found in DB; cannot auto-approve."}
+        
     if batch_record.get("owner_id") not in ADMINS:
+        logger.info(f"Automation: Payment for normal user {batch_record.get('owner_id')}; manual approval required.")
         return {"status": "info", "message": "Payment is for normal user; manual approval required."}
 
     payment_id = payment_record["_id"]
+    logger.info(f"Automation: Auto-approving payment {payment_id} for amount {unique_amount}.")
     result = await process_payment_approval(payment_id, approved_by="Automation 🤖")
     return {"status": "success", "message": result}
 
@@ -1078,6 +1284,9 @@ def start_background_services():
         logger.exception("Failed to start scheduler")
 
 async def main():
+    # --- FIX 1 & 2: Set up database indexes before starting ---
+    await setup_database_indexes()
+    
     start_background_services()
     logger.info("Starting bot client...")
     await app.start()
