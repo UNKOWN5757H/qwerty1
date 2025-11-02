@@ -1,5 +1,3 @@
-# --- Files-Store-main/bot.py (VERSION 13.3 - CRASH FIX) ---
-
 # bot_v13.py (VERSION 13.3) — Production-ready, Motor async + APScheduler integration
 # - Fixes critical syntax errors causing application crashes on startup.
 # - Implements a more efficient file delivery and deletion mechanism.
@@ -48,7 +46,7 @@ MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://Rashmika1:Rashmika@rashmi
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1001753089099"))
 UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "linkz_ki_duniyaa")  # channel username without @
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "2098589219")
-ADMINS =
+ADMINS = [int(x) for x in ADMIN_IDS_STR.split(",") if x.strip().isdigit()]
 PAYMENT_PAGE_URL = os.environ.get("PAYMENT_PAGE_URL", "https://t.me/Nikhil5757h")
 AUTOMATION_SECRET = os.environ.get("AUTOMATION_SECRET", "payment4telegram")
 FREE_DELETE_DELAY_MINUTES = int(os.environ.get("FREE_DELETE_DELAY_MINUTES", "30"))
@@ -76,28 +74,27 @@ logger = logging.getLogger(__name__)
 
 flask_app = Flask(__name__)
 
-@flask_app.route("/", methods=)
+@flask_app.route("/", methods=["GET"])
 def root_status():
     return "Bot is alive!", 200
 
-@flask_app.route("/ping", methods=)
+@flask_app.route("/ping", methods=["GET"])
 def ping():
     return jsonify({"status": "ok", "time": datetime.now(IST).isoformat()}), 200
 
-@flask_app.route("/status", methods=)
+@flask_app.route("/status", methods=["GET"])
 def status():
     try:
-        # lightweight health check
         ok = sync_mongo_client is not None
         return jsonify({"status": "ok" if ok else "degraded", "db": "ok" if ok else "down"}), 200 if ok else 500
     except Exception:
         return jsonify({"status": "error"}), 500
 
-@flask_app.route("/api/shortcut", methods=)
+@flask_app.route("/api/shortcut", methods=["POST"])
 def shortcut_webhook():
     # Automation webhook: will auto-approve payments if header matches AUTOMATION_SECRET
     provided_secret = request.headers.get("X-Shortcut-Secret")
-    if not AUTOMATION_SECRET or provided_secret!= AUTOMATION_SECRET:
+    if not AUTOMATION_SECRET or provided_secret != AUTOMATION_SECRET:
         return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
     sms_text = request.get_data(as_text=True)
@@ -110,7 +107,6 @@ def shortcut_webhook():
 
     unique_amount = amount_match.group(1).replace(",", "")
     # Find pending payment with that unique_amount and auto-approve if owner is admin
-    # Note: run_async below schedules coroutine to run in bot loop.
     coro = _auto_approve_by_amount(unique_amount)
     future = asyncio.run_coroutine_threadsafe(coro, app.loop)
     try:
@@ -134,10 +130,7 @@ if not MONGO_URI:
     logger.error("MONGO_URI is not set. Exiting.")
     raise SystemExit("MONGO_URI not provided")
 
-# Keep a sync client for APScheduler jobstore (it requires pymongo)
 sync_mongo_client = MongoClient(MONGO_URI)
-
-# Async client for all bot DB operations
 async_mongo_client = AsyncIOMotorClient(MONGO_URI)
 db_async = async_mongo_client["file_link_bot"]
 files_collection = db_async["file_batches"]
@@ -145,7 +138,6 @@ users_collection = db_async["users"]
 settings_collection = db_async["settings"]
 payments_collection = db_async["pending_payments"]
 
-# APScheduler jobstore uses sync pymongo client
 jobstores = {"default": MongoDBJobStore(database="file_link_bot", collection="scheduler_jobs", client=sync_mongo_client)}
 scheduler = BackgroundScheduler(jobstores=jobstores, timezone="Asia/Kolkata")
 
@@ -204,18 +196,10 @@ async def is_user_member(client: Client, user_id: int) -> bool:
 def sanitize_upi(upi: str) -> str:
     return upi.strip()
 
-# -------------------------
-#
-# Scheduler job wrappers (these schedule coroutines safely to bot loop)
-#
-# -------------------------
-
 def schedule_coroutine(coro):
-    # helper: run coroutine in bot loop
     if app.is_connected:
         return asyncio.run_coroutine_threadsafe(coro, app.loop)
     else:
-        # fallback to ensure it doesn't crash; schedule on current loop if available
         loop = asyncio.get_event_loop()
         return asyncio.run_coroutine_threadsafe(coro, loop)
 
@@ -231,7 +215,6 @@ def expire_payment_job(payment_id: str, user_id: int, batch_id: str):
     async def task():
         pr = await payments_collection.find_one({"_id": payment_id})
         if pr:
-            # delete it
             await payments_collection.delete_one({"_id": payment_id})
             logger.info(f"Payment session {payment_id} expired for user {user_id}.")
             try:
@@ -262,10 +245,12 @@ def expire_approval_job(payment_id: str, user_id: int, owner_id: int):
 # -------------------------
 
 def get_start_text():
-    return "Hey! I am PermaStore Bot 🤖\n\nSend Me Any File! And I'll Gives You A Permanent Shareable Link! Which Never EXPIRES."
+    return "Hey! I am PermaStore Bot 🤖\n\nSend Me Any File! And I'll Give You A Permanent Shareable Link! Which Never EXPIRES."
 
 def get_start_keyboard():
-    return InlineKeyboardMarkup(])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("ℹ️ Help", callback_data="show_help")],
+    ])
 
 def get_help_text_and_keyboard(user_id: int):
     base_help = (
@@ -290,8 +275,12 @@ def get_help_text_and_keyboard(user_id: int):
             "/unban <user_id> - Unban a user.\n"
             "/linkinfo <batch_id> - Get details of a specific link.\n"
         )
-        return base_help + admin_extra, InlineKeyboardMarkup(])
-    return base_help, InlineKeyboardMarkup(])
+        return base_help + admin_extra, InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Home", callback_data="back_to_start")]
+        ])
+    return base_help, InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Home", callback_data="back_to_start")]
+    ])
 
 # -------------------------
 #
@@ -315,7 +304,7 @@ async def start_handler(client: Client, message: Message):
         user_states.pop(user_id, None)
 
     if len(message.command) > 1:
-        batch_id = message.command[span_0](start_span)[span_0](end_span)
+        batch_id = message.command[1]
         if not await is_user_member(client, user_id):
             join_btn = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")
             joined_btn = InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{batch_id}")
@@ -329,20 +318,17 @@ async def start_handler(client: Client, message: Message):
 async def check_join_callback(client: Client, query: CallbackQuery):
     user_id = query.from_user.id
     try:
-        # Extract batch_id from callback_data like "check_join_xxxxxxxx"
-        batch_id = query.data.split("_", 2)[span_6](start_span)[span_6](end_span)
+        batch_id = query.data.split("_", 2)[2]
     except IndexError:
         await query.answer("Invalid request.", show_alert=True)
         return
 
     if await is_user_member(client, user_id):
         await query.answer("Welcome! You can now access the content.", show_alert=False)
-        # Delete the "join channel" message
         try:
             await query.message.delete()
         except Exception as e:
             logger.warning(f"Could not delete join message for user {user_id}: {e}")
-        # Proceed to deliver the content
         await process_link_click(client, user_id, batch_id)
     else:
         await query.answer("❌ You haven't joined the channel yet. Please join and then click the button again.", show_alert=True)
@@ -394,7 +380,7 @@ async def ban_handler(client: Client, message: Message):
         await message.reply("Usage: `/ban <user_id>`")
         return
     try:
-        user_id_to_ban = int(message.command[span_1](start_span)[span_1](end_span))
+        user_id_to_ban = int(message.command[1])
         if user_id_to_ban in ADMINS:
             await message.reply("❌ You cannot ban an admin.")
             return
@@ -409,7 +395,7 @@ async def unban_handler(client: Client, message: Message):
         await message.reply("Usage: `/unban <user_id>`")
         return
     try:
-        user_id_to_unban = int(message.command[span_2](start_span)[span_2](end_span))
+        user_id_to_unban = int(message.command[1])
         await users_collection.update_one({"_id": user_id_to_unban}, {"$set": {"banned": False}}, upsert=True)
         await message.reply(f"✅ User **{user_id_to_unban}** has been unbanned.")
     except ValueError:
@@ -420,7 +406,7 @@ async def linkinfo_handler(client: Client, message: Message):
     if len(message.command) < 2:
         await message.reply("Usage: `/linkinfo <batch_id>`")
         return
-    batch_id = message.command[span_3](start_span)[span_3](end_span)
+    batch_id = message.command[1]
     batch_record = await files_collection.find_one({"_id": batch_id})
     if not batch_record:
         await message.reply(f"❌ No link found with Batch ID: **{batch_id}**")
@@ -429,7 +415,7 @@ async def linkinfo_handler(client: Client, message: Message):
     owner_info = await users_collection.find_one({"_id": owner_id})
     owner_details = f"{owner_info.get('first_name', '')} (@{owner_info.get('username', 'N/A')})" if owner_info else "Unknown (Not in DB)"
     link_type = "Paid 💰" if batch_record.get("is_paid") else "Free 🆓"
-    file_count = len(batch_record.get("message_ids",))
+    file_count = len(batch_record.get("message_ids", []))
     text = (
         f"🔗 Link Information\n\n- Batch ID: **{batch_id}**\n- Link Type: {link_type}\n- File Count: **{file_count}**\n\n"
         f"👤 Owner Details:\n- User ID: **{owner_id}**\n- Name/Username: {owner_details}\n"
@@ -441,17 +427,25 @@ async def linkinfo_handler(client: Client, message: Message):
 @app.on_message(filters.command("settings") & filters.private & filters.user(ADMINS))
 async def settings_handler(client: Client, message: Message):
     current_mode = await get_bot_mode()
-    keyboard = InlineKeyboardMarkup(,
-       )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🌐 Public", callback_data="set_mode_public"),
+            InlineKeyboardButton("🔒 Private", callback_data="set_mode_private")
+        ]
+    ])
     await message.reply(f"⚙️ Bot Settings\n\nCurrent Mode: **{current_mode.upper()}**.\nSelect A New Mode:", reply_markup=keyboard)
 
 @app.on_callback_query(filters.regex(r"^set_mode_") & filters.user(ADMINS))
 async def set_mode_callback(client: Client, query: CallbackQuery):
-    new_mode = query.data.split("_")[span_7](start_span)[span_7](end_span)
+    new_mode = query.data.split("_")[2]
     await settings_collection.update_one({"_id": "bot_mode"}, {"$set": {"mode": new_mode}}, upsert=True)
     await query.answer(f"Mode set to {new_mode.upper()}!", show_alert=True)
-    keyboard = InlineKeyboardMarkup(,
-       )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🌐 Public", callback_data="set_mode_public"),
+            InlineKeyboardButton("🔒 Private", callback_data="set_mode_private")
+        ]
+    ])
     await query.message.edit_text(f"⚙️ Bot Settings\n\nMode Is Now **{new_mode.upper()}**.\nSelect A New Mode:", reply_markup=keyboard)
 
 # -------------------------
@@ -463,7 +457,7 @@ async def set_mode_callback(client: Client, query: CallbackQuery):
 @app.on_message(filters.command(["setupi", "myupi"]) & filters.private & filters.user(ADMINS))
 async def upi_commands_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    command = message.command.lower()
+    command = message.command[0].lower()
     if command == "setupi":
         user_states[user_id] = {"state": "waiting_for_new_upi", "status_msgs": [message.id]}
         await message.reply("Please Send Your UPI ID To Save Or Update It.\nExample: `yourname@upi`")
@@ -492,13 +486,11 @@ async def file_handler(client: Client, message: Message):
         await message.reply("😔 Sorry! Only Admins Are Allowed To Upload Files At The Moment.")
         return
     if user_id in user_states:
-        # do not interrupt existing stateful flows
         return
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"files":, "menu_msg_id": None, "job": None}
+        user_sessions[user_id] = {"files": [], "menu_msg_id": None, "job": None}
     
     user_sessions[user_id]["files"].append(message)
-    # cancel previous scheduled update job
     if user_sessions[user_id].get("job"):
         try:
             user_sessions[user_id]["job"].cancel()
@@ -516,12 +508,12 @@ async def update_batch_menu(client: Client, user_id: int, last_message: Message)
         return
     file_count = len(user_sessions[user_id]["files"])
     text = f"✅ Batch Updated! You Have **{file_count}** Files In The Queue. What's Next?"
-    buttons =,
-       ,
-       
+    buttons = [
+        [InlineKeyboardButton("🔗 Get Free Link", callback_data="get_link"),
+         InlineKeyboardButton("➕ Add More Files", callback_data="add_more")]
+    ]
     if user_id in ADMINS:
-        # place set_price button on same row with Get Free Link
-        buttons.append(InlineKeyboardButton("💰 Set Price & Sell", callback_data="set_price"))
+        buttons[0].append(InlineKeyboardButton("💰 Set Price & Sell", callback_data="set_price"))
     keyboard = InlineKeyboardMarkup(buttons)
     old_menu_id = user_sessions[user_id].get("menu_msg_id")
     if old_menu_id:
@@ -546,9 +538,8 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
         return
 
     await query.message.edit_text("__⏳ `Step 1/2`: Copying Files To Secure Storage...__")
-    log_message_ids =
+    log_message_ids = []
     try:
-        # copy files to LOG_CHANNEL (sync copy returns Message)
         for msg in user_sessions[user_id]["files"]:
             copied = await msg.copy(LOG_CHANNEL)
             log_message_ids.append(copied.id)
@@ -558,7 +549,6 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
         user_sessions.pop(user_id, None)
         return
 
-    # generate a proper batch ID and share link
     batch_id = generate_random_string(12)
     share_link = f"https://t.me/{(await app.get_me()).username}?start={batch_id}"
 
@@ -590,7 +580,6 @@ async def conversation_handler(client: Client, message: Message):
         return
     state_info = user_states[user_id]
     state = state_info.get("state")
-    # collect message ids for cleanup where relevant
     if "status_msgs" in state_info:
         state_info["status_msgs"].append(message.id)
 
@@ -604,26 +593,25 @@ async def conversation_handler(client: Client, message: Message):
             if user_doc and user_doc.get("upi_id"):
                 upi_id = user_doc["upi_id"]
                 status_msg = await message.reply(f"__✅ Price: `₹{price:.2f}` | UPI: `{upi_id}`\n⏳ Finalizing link...__")
-                state_info.setdefault("status_msgs",).append(status_msg.id)
+                state_info.setdefault("status_msgs", []).append(status_msg.id)
                 await create_paid_batch_in_db(client, message, state_info, upi_id)
             else:
                 state_info["state"] = "waiting_for_upi"
                 status_msg = await message.reply(f"__✅ Price: `₹{price:.2f}`.\n\nNow Send Your UPI ID (It Will Be Saved).__")
-                state_info.setdefault("status_msgs",).append(status_msg.id)
+                state_info.setdefault("status_msgs", []).append(status_msg.id)
         except Exception:
             status_msg = await message.reply("__**Invalid Price.** Send A Number Like `10`.__")
-            state_info.setdefault("status_msgs",).append(status_msg.id)
+            state_info.setdefault("status_msgs", []).append(status_msg.id)
 
     elif state == "waiting_for_upi":
         upi_id = sanitize_upi(message.text)
-        # basic UPI pattern
         if not re.match(r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$", upi_id):
             status_msg = await message.reply("__Invalid UPI ID format. Try again.__")
-            state_info.setdefault("status_msgs",).append(status_msg.id)
+            state_info.setdefault("status_msgs", []).append(status_msg.id)
             return
         await users_collection.update_one({"_id": user_id}, {"$set": {"upi_id": upi_id}}, upsert=True)
         status_msg = await message.reply(f"__✅ UPI ID `{upi_id}` Saved.\n⏳ Finalizing Link...__")
-        state_info.setdefault("status_msgs",).append(status_msg.id)
+        state_info.setdefault("status_msgs", []).append(status_msg.id)
         await create_paid_batch_in_db(client, message, state_info, upi_id)
 
     elif state == "waiting_for_new_upi":
@@ -633,9 +621,8 @@ async def conversation_handler(client: Client, message: Message):
             return
         await users_collection.update_one({"_id": user_id}, {"$set": {"upi_id": upi_id}}, upsert=True)
         await message.reply(f"__✅ Success! Your UPI ID Is Updated To: `{upi_id}`__")
-        # cleanup
         try:
-            await client.delete_messages(user_id, state_info.get("status_msgs",))
+            await client.delete_messages(user_id, state_info.get("status_msgs", []))
         except Exception:
             pass
         user_states.pop(user_id, None)
@@ -662,9 +649,8 @@ async def create_paid_batch_in_db(client: Client, message: Message, state_info: 
             "created_at": datetime.now(timezone.utc),
         })
         await message.reply(f"✅ Paid Link Generated For {len(state_info['log_ids'])} file(s)!\n\nPrice: **₹{state_info['price']:.2f}**\n\n`{share_link}`", disable_web_page_preview=True)
-        # cleanup state messages
         try:
-            await client.delete_messages(user_id, state_info.get("status_msgs",))
+            await client.delete_messages(user_id, state_info.get("status_msgs", []))
         except Exception:
             pass
     except Exception as e:
@@ -697,14 +683,15 @@ async def get_file_details(msg_id):
         return "DELETED/UNAVAILABLE FILE", "N/A"
 
 async def generate_edit_menu(batch_id: str):
-    batch_files = EDIT_SESSIONS.get(batch_id, {}).get("files",)
+    batch_files = EDIT_SESSIONS.get(batch_id, {}).get("files", [])
     text = f"✍️ Editing Link: **{batch_id}**\n\n__You have {len(batch_files)} files in this batch. You can delete files or add more.__"
-    buttons =
+    buttons = []
     for i, msg_id in enumerate(batch_files):
         file_name, file_size = await get_file_details(msg_id)
-        buttons.append()
-    buttons.append()
-    buttons.append()
+        buttons.append([InlineKeyboardButton(f"❌ Delete {file_name} ({file_size})", callback_data=f"edit_delete_{batch_id}_{i}")])
+    buttons.append([InlineKeyboardButton("➕ Add More Files", callback_data=f"edit_add_{batch_id}")])
+    buttons.append([InlineKeyboardButton("💾 Save Changes", callback_data=f"edit_save_{batch_id}"),
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"edit_cancel_{batch_id}")])
     return text, InlineKeyboardMarkup(buttons)
 
 @app.on_message(filters.command("editlink") & filters.private)
@@ -714,12 +701,11 @@ async def edit_link_command(client: Client, message: Message):
         await message.reply("How to use:\n`/editlink <batch_id>`\n\n_You can only edit links that you have created._")
         return
 
-    batch_id_input = message.command[span_4](start_span)[span_4](end_span)
-    # Support sending full URL
+    batch_id_input = message.command[1]
     if "http" in batch_id_input:
         try:
             parsed = urlparse(batch_id_input)
-            batch_id = parse_qs(parsed.query)["start"]
+            batch_id = parse_qs(parsed.query)["start"][0]
         except Exception:
             await message.reply("__❗️ **Invalid Link format.**__\n\nPlease provide just the Batch ID, not the full URL.")
             return
@@ -730,13 +716,13 @@ async def edit_link_command(client: Client, message: Message):
     if not batch_record:
         await message.reply(f"__❌ No link found with Batch ID: `{batch_id}`__")
         return
-    if batch_record.get("owner_id")!= user_id:
+    if batch_record.get("owner_id") != user_id:
         await message.reply("__🔒 You can only edit links that you have created.__")
         return
 
     EDIT_SESSIONS[batch_id] = {
         "owner_id": user_id,
-        "files": list(batch_record.get("message_ids",)),
+        "files": list(batch_record.get("message_ids", [])),
         "edit_msg_id": None
     }
     user_states[user_id] = {"state": "editing_link", "batch_id": batch_id}
@@ -748,19 +734,18 @@ async def edit_link_command(client: Client, message: Message):
 @app.on_callback_query(filters.regex("^edit_"))
 async def edit_link_callbacks(client: Client, query: CallbackQuery):
     user_id = query.from_user.id
-    # parts will be like ['edit', 'action', 'batch_id', 'index'] or ['edit', 'action', 'batch_id']
-    parts = query.data.split("_") 
-    action = parts[span_5](start_span)[span_5](end_span)
-    batch_id = parts[span_8](start_span)[span_8](end_span)
+    parts = query.data.split("_")
+    action = parts[1]
+    batch_id = parts[2]
 
     session = EDIT_SESSIONS.get(batch_id)
-    if not session or session.get("owner_id")!= user_id:
+    if not session or session.get("owner_id") != user_id:
         await query.answer("This edit session is invalid or has expired.", show_alert=True)
         return
 
     if action == "delete":
         try:
-            idx = int(parts[span_9](start_span)[span_9](end_span))
+            idx = int(parts[3])
             del EDIT_SESSIONS[batch_id]["files"][idx]
             await query.answer("✅ File removed.")
             text, keyboard = await generate_edit_menu(batch_id)
@@ -771,7 +756,7 @@ async def edit_link_callbacks(client: Client, query: CallbackQuery):
         await query.answer("✅ OK. Send me more files to add to this batch. When you are done, click 'Save Changes'.", show_alert=True)
         user_states[user_id] = {"state": "editing_adding_files", "batch_id": batch_id}
     elif action == "cancel":
-        del EDIT_SESSIONS[batch_id]
+        EDIT_SESSIONS.pop(batch_id, None)
         user_states.pop(user_id, None)
         await query.message.edit_text("__❌ Edit cancelled.__")
     elif action == "save":
@@ -780,7 +765,7 @@ async def edit_link_callbacks(client: Client, query: CallbackQuery):
             await query.answer("❗️ You cannot save an empty link. Add at least one file.", show_alert=True)
             return
         await files_collection.update_one({"_id": batch_id}, {"$set": {"message_ids": new_file_list}})
-        del EDIT_SESSIONS[batch_id]
+        EDIT_SESSIONS.pop(batch_id, None)
         user_states.pop(user_id, None)
         await query.message.edit_text(f"__✅ **Link `{batch_id}` updated successfully!** It now contains **{len(new_file_list)}** files.__")
 
@@ -809,34 +794,24 @@ async def file_handler_for_editing(client: Client, message: Message):
 # -------------------------
 
 async def process_link_click(client: Client, user_id: int, batch_id: str):
-    """
-    Main entrypoint when a user clicks a t.me link or sends /start <batch_id>.
-    Handles free vs paid flows. For paid flow, generates a unique amount (₹X.00 -> ₹X.01..X.99),
-    creates a pending payment record, schedules an expiration job, and notifies the seller.
-    """
     batch_record = await files_collection.find_one({"_id": batch_id})
     if not batch_record:
         await client.send_message(user_id, "🤔 Link Expired or Invalid")
         return
 
-    # Free batch -> deliver immediately
     if not batch_record.get("is_paid", False):
         await send_files_from_batch(client, user_id, batch_record, FREE_DELETE_DELAY_MINUTES, "Minutes")
         return
 
-    # Paid flow
     base_price = float(batch_record.get("price", 0))
-    # get pending unique amounts (set)
     pending_cursor = payments_collection.find({}, {"unique_amount": 1})
     pending_amounts = {p["unique_amount"] async for p in pending_cursor}
-    # find unique amount by adding cents (1..99)
     unique_amount_str = None
     for i in range(1, 100):
         temp_amount = f"{base_price + (i / 100.0):.2f}"
         if temp_amount not in pending_amounts:
             unique_amount_str = temp_amount
             break
-    # if none found in 1..99, extend search
     if not unique_amount_str:
         logger.warning(f"All 99 slots taken for base {base_price}, searching extended.")
         for i in range(100, 500):
@@ -857,7 +832,6 @@ async def process_link_click(client: Client, user_id: int, batch_id: str):
         "created_at": datetime.now(timezone.utc)
     })
 
-    # schedule expiration job
     run_time = datetime.now(IST) + timedelta(minutes=PAYMENT_EXPIRATION_MINUTES)
     try:
         scheduler.add_job(expire_payment_job, "date", run_date=run_time, args=[payment_id, user_id, batch_id], id=payment_id, replace_existing=True)
@@ -888,7 +862,6 @@ async def i_have_paid_callback(client: Client, query: CallbackQuery):
         await query.answer("Invalid request.", show_alert=True)
         return
 
-    # cancel expiration job
     try:
         scheduler.remove_job(payment_id)
         logger.info(f"Expired job for payment {payment_id} removed on 'I Have Paid' click.")
@@ -909,7 +882,6 @@ async def i_have_paid_callback(client: Client, query: CallbackQuery):
         return
 
     owner_id = batch_record["owner_id"]
-    # schedule approval expiration
     run_time = datetime.now(IST) + timedelta(hours=APPROVAL_EXPIRATION_HOURS)
     try:
         scheduler.add_job(expire_approval_job, "date", run_date=run_time, args=[payment_id, query.from_user.id, owner_id], id=f"approve_{payment_id}", replace_existing=True)
@@ -932,9 +904,7 @@ async def i_have_paid_callback(client: Client, query: CallbackQuery):
         logger.warning(f"Could not notify owner {owner_id}: {e}")
 
 async def process_payment_approval(payment_id: str, approved_by: str = "Seller (Manual)"):
-    # This can be called by admin buttons or via automation webhook
     try:
-        # remove scheduled approval expiration job
         try:
             scheduler.remove_job(f"approve_{payment_id}")
         except JobLookupError:
@@ -953,7 +923,6 @@ async def process_payment_approval(payment_id: str, approved_by: str = "Seller (
 
         batch_record = await files_collection.find_one({"_id": batch_id})
         if not batch_record:
-            # delete orphan payment
             await payments_collection.delete_one({"_id": payment_id})
             logger.error(f"Critical Error: Batch {batch_id} not found for payment {payment_id}. Deleting orphan payment.")
             return f"__Error: The file batch `{batch_id}` no longer exists. Payment record deleted.__"
@@ -1003,7 +972,7 @@ async def payment_verification_callback(client: Client, query: CallbackQuery):
         return
 
     batch_record = await files_collection.find_one({"_id": payment_record["batch_id"]})
-    if not batch_record or batch_record["owner_id"]!= owner_id:
+    if not batch_record or batch_record["owner_id"] != owner_id:
         await query.answer("__This Is Not For You.__", show_alert=True)
         return
 
@@ -1034,13 +1003,9 @@ async def payment_verification_callback(client: Client, query: CallbackQuery):
 # -------------------------
 
 async def send_files_from_batch(client: Client, user_id: int, batch_record: dict, delay_amount: int, delay_unit: str):
-    """
-    Sends files to user by copying from LOG_CHANNEL. Adds automatic deletion job
-    based on delay_amount/delay_unit. Returns True if all files delivered successfully.
-    """
     await client.send_message(user_id, f"✅ Access Granted! You are receiving {len(batch_record['message_ids'])} file(s).")
     all_sent_successfully = True
-    sent_message_ids =
+    sent_message_ids = []
     for msg_id in batch_record['message_ids']:
         try:
             sent_file_msg = await client.copy_message(chat_id=user_id, from_chat_id=LOG_CHANNEL, message_id=msg_id)
@@ -1060,7 +1025,6 @@ async def send_files_from_batch(client: Client, user_id: int, batch_record: dict
     if sent_message_ids:
         warning_text = f"\n\n⚠️ **IMPORTANT!**\nThese files will be automatically deleted in **{delay_amount} {delay_unit}**. Please forward them to your saved messages immediately."
         try:
-            # Send the warning as a separate message, replying to the last sent file
             await client.send_message(user_id, warning_text, reply_to_message_id=sent_message_ids[-1])
         except Exception as e:
             logger.warning(f"Could not send deletion warning message to {user_id}: {e}")
@@ -1088,16 +1052,13 @@ async def _auto_approve_by_amount(unique_amount: str):
         await payments_collection.delete_one({"_id": payment_record["_id"]})
         return {"status": "error", "message": "Batch not found; payment removed."}
 
-    # only auto-approve if owner is admin (or you can change policy)
     owner_doc = await users_collection.find_one({"_id": batch_record["owner_id"]})
     if not owner_doc:
         return {"status": "info", "message": "Owner not found in DB; cannot auto-approve."}
     if batch_record.get("owner_id") not in ADMINS:
-        # do not auto-approve seller payments if owner is not admin (safer default)
         return {"status": "info", "message": "Payment is for normal user; manual approval required."}
 
     payment_id = payment_record["_id"]
-    # call process_payment_approval and return result
     result = await process_payment_approval(payment_id, approved_by="Automation 🤖")
     return {"status": "success", "message": result}
 
@@ -1108,10 +1069,8 @@ async def _auto_approve_by_amount(unique_amount: str):
 # -------------------------
 
 def start_background_services():
-    # Start Flask thread
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    # Start APScheduler
     try:
         scheduler.start()
         logger.info("Scheduler started")
@@ -1119,17 +1078,11 @@ def start_background_services():
         logger.exception("Failed to start scheduler")
 
 async def main():
-    # Start background services (Flask, APScheduler)
     start_background_services()
-    
     logger.info("Starting bot client...")
     await app.start()
     logger.info("Bot client started.")
-    
-    # Keep the bot running
     await idle()
-    
-    # Shutdown sequence
     logger.info("Stopping bot...")
     await app.stop()
     scheduler.shutdown()
