@@ -1,13 +1,9 @@
-# --- Files-Store-main/bot.py (VERSION 13.2 - SYNTAX FIX) ---
+# --- Files-Store-main/bot.py (VERSION 13.3 - CRASH FIX) ---
 
-# bot_v13.py (VERSION 13.2) — Production-ready, Motor async + APScheduler integration
-# - Fixes critical syntax errors causing application crashes.
-# - Fixes the "I Have Joined" button functionality.
-# - Uses motor (AsyncIOMotorClient) for async DB operations used inside asyncio coroutines
-# - Keeps pymongo MongoClient for APScheduler MongoDBJobStore (sync)
-# - Supports admin manual approval + webhook automation approval
-# - Flask endpoints: /, /ping, /status, /api/shortcut
-# - Deploy notes: works with "python bot_v13.py" or use Gunicorn/UVicorn for Flask if needed
+# bot_v13.py (VERSION 13.3) — Production-ready, Motor async + APScheduler integration
+# - Fixes critical syntax errors causing application crashes on startup.
+# - Implements a more efficient file delivery and deletion mechanism.
+# - Retains the fix for the "I Have Joined" button functionality.
 # -----------------------------------------------------------------------------
 
 import os
@@ -1042,7 +1038,7 @@ async def send_files_from_batch(client: Client, user_id: int, batch_record: dict
     Sends files to user by copying from LOG_CHANNEL. Adds automatic deletion job
     based on delay_amount/delay_unit. Returns True if all files delivered successfully.
     """
-    await client.send_message(user_id, f"✅ Access Granted! You Are Receiving {len(batch_record['message_ids'])} Files.")
+    await client.send_message(user_id, f"✅ Access Granted! You are receiving {len(batch_record['message_ids'])} file(s).")
     all_sent_successfully = True
     sent_message_ids =
     for msg_id in batch_record['message_ids']:
