@@ -1,18 +1,12 @@
+# --- Files-Store-main/bot.py (VERSION 13.1 - JOIN BUTTON FIX) ---
 
-# --- Files-Store-main/bot.py (VERSION 13.0 - EDIT LINK FEATURE & FINAL FIXES) ---
-
-# bot_v13.py (VERSION 13.0) — Production-ready, Motor async + APScheduler integration
-
+# bot_v13.py (VERSION 13.1) — Production-ready, Motor async + APScheduler integration
+# - Fixes the "I Have Joined" button functionality.
 # - Uses motor (AsyncIOMotorClient) for async DB operations used inside asyncio coroutines
-
 # - Keeps pymongo MongoClient for APScheduler MongoDBJobStore (sync)
-
 # - Supports admin manual approval + webhook automation approval
-
 # - Flask endpoints: /, /ping, /status, /api/shortcut
-
 # - Deploy notes: works with "python bot_v13.py" or use Gunicorn/UVicorn for Flask if needed
-
 # -----------------------------------------------------------------------------
 
 import os
@@ -57,7 +51,7 @@ MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://Rashmika1:Rashmika@rashmi
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1001753089099"))
 UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "linkz_ki_duniyaa")  # channel username without @
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "2098589219")
-ADMINS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip().isdigit()]
+ADMINS =
 PAYMENT_PAGE_URL = os.environ.get("PAYMENT_PAGE_URL", "https://t.me/Nikhil5757h")
 AUTOMATION_SECRET = os.environ.get("AUTOMATION_SECRET", "payment4telegram")
 FREE_DELETE_DELAY_MINUTES = int(os.environ.get("FREE_DELETE_DELAY_MINUTES", "30"))
@@ -75,7 +69,6 @@ FLASK_PORT = int(os.environ.get("PORT", "8080"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
-# FIX: Use __name__ instead of undefined 'name'
 logger = logging.getLogger(__name__)
 
 # -------------------------
@@ -84,18 +77,17 @@ logger = logging.getLogger(__name__)
 #
 # -------------------------
 
-# FIX: Use __name__ instead of undefined 'name'
 flask_app = Flask(__name__)
 
-@flask_app.route("/", methods=["GET"])
+@flask_app.route("/", methods=)
 def root_status():
     return "Bot is alive!", 200
 
-@flask_app.route("/ping", methods=["GET"])
+@flask_app.route("/ping", methods=)
 def ping():
     return jsonify({"status": "ok", "time": datetime.now(IST).isoformat()}), 200
 
-@flask_app.route("/status", methods=["GET"])
+@flask_app.route("/status", methods=)
 def status():
     try:
         # lightweight health check
@@ -104,11 +96,11 @@ def status():
     except Exception:
         return jsonify({"status": "error"}), 500
 
-@flask_app.route("/api/shortcut", methods=["POST"])
+@flask_app.route("/api/shortcut", methods=)
 def shortcut_webhook():
     # Automation webhook: will auto-approve payments if header matches AUTOMATION_SECRET
     provided_secret = request.headers.get("X-Shortcut-Secret")
-    if not AUTOMATION_SECRET or provided_secret != AUTOMATION_SECRET:
+    if not AUTOMATION_SECRET or provided_secret!= AUTOMATION_SECRET:
         return jsonify({"status": "error", "message": "Unauthorized"}), 403
 
     sms_text = request.get_data(as_text=True)
@@ -175,7 +167,7 @@ app = Client("FileLinkBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKE
 # -------------------------
 
 user_sessions = {}   # user_id -> {'files': [Message,...], 'menu_msg_id': int, 'job': asyncio.Task}
-user_states = {}     # user_id -> {'state': ..., ...}
+user_states = {}     # user_id -> {'state':...,...}
 EDIT_SESSIONS = {}   # batch_id -> {'owner_id': id, 'files': [log_msg_ids], 'edit_msg_id': int}
 
 # -------------------------
@@ -230,7 +222,6 @@ def schedule_coroutine(coro):
         loop = asyncio.get_event_loop()
         return asyncio.run_coroutine_threadsafe(coro, loop)
 
-# FIX: Corrected structure to use schedule_coroutine helper
 def delete_message_job(chat_id: int, message_ids: list):
     async def task():
         try:
@@ -241,10 +232,10 @@ def delete_message_job(chat_id: int, message_ids: list):
 
 def expire_payment_job(payment_id: str, user_id: int, batch_id: str):
     async def task():
-        pr = await payments_collection.find_one({"id": payment_id})
+        pr = await payments_collection.find_one({"_id": payment_id})
         if pr:
             # delete it
-            await payments_collection.delete_one({"id": payment_id})
+            await payments_collection.delete_one({"_id": payment_id})
             logger.info(f"Payment session {payment_id} expired for user {user_id}.")
             try:
                 bot_me = await app.get_me()
@@ -262,7 +253,6 @@ def expire_approval_job(payment_id: str, user_id: int, owner_id: int):
             logger.info(f"Approval request {payment_id} for user {user_id} expired.")
             try:
                 await app.send_message(user_id, f"😔 We are sorry, but the seller did not respond to your payment confirmation within {APPROVAL_EXPIRATION_HOURS} hours. Your request has been cancelled.")
-                # FIX: Corrected string formatting
                 await app.send_message(owner_id, f"⚠️ The payment approval request for user **{user_id}** has expired because you did not take action.")
             except Exception:
                 pass
@@ -278,7 +268,7 @@ def get_start_text():
     return "Hey! I am PermaStore Bot 🤖\n\nSend Me Any File! And I'll Gives You A Permanent Shareable Link! Which Never EXPIRES."
 
 def get_start_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❓ How to Use / Help", callback_data="show_help")]])
+    return InlineKeyboardMarkup(])
 
 def get_help_text_and_keyboard(user_id: int):
     base_help = (
@@ -288,7 +278,6 @@ def get_help_text_and_keyboard(user_id: int):
         "   - 🔗 Get Free Link: Creates a permanent link for all files in your batch.\n\n"
         "   - ➕ Add More Files: Allows you to send more files to the current batch.\n\n"
         "Available Commands:\n"
-        # FIX: Corrected string formatting
         "/start - Restart the bot and clear any session.\n\n"
         "/editlink <batch_id> - Edit an existing link you created.\n\n"
         "/help - Show this help message.\n\n"
@@ -304,8 +293,8 @@ def get_help_text_and_keyboard(user_id: int):
             "/unban <user_id> - Unban a user.\n"
             "/linkinfo <batch_id> - Get details of a specific link.\n"
         )
-        return base_help + admin_extra, InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Start", callback_data="back_to_start")]])
-    return base_help, InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Start", callback_data="back_to_start")]])
+        return base_help + admin_extra, InlineKeyboardMarkup(])
+    return base_help, InlineKeyboardMarkup(])
 
 # -------------------------
 #
@@ -329,7 +318,7 @@ async def start_handler(client: Client, message: Message):
         user_states.pop(user_id, None)
 
     if len(message.command) > 1:
-        batch_id = message.command[1]
+        batch_id = message.command[span_0](start_span)[span_0](end_span)
         if not await is_user_member(client, user_id):
             join_btn = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")
             joined_btn = InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{batch_id}")
@@ -338,6 +327,28 @@ async def start_handler(client: Client, message: Message):
         await process_link_click(client, user_id, batch_id)
     else:
         await message.reply(get_start_text(), reply_markup=get_start_keyboard())
+
+@app.on_callback_query(filters.regex(r"^check_join_"))
+async def check_join_callback(client: Client, query: CallbackQuery):
+    user_id = query.from_user.id
+    try:
+        # Extract batch_id from callback_data like "check_join_xxxxxxxx"
+        batch_id = query.data.split("_", 2)[span_6](start_span)[span_6](end_span)
+    except IndexError:
+        await query.answer("Invalid request.", show_alert=True)
+        return
+
+    if await is_user_member(client, user_id):
+        await query.answer("Welcome! You can now access the content.", show_alert=False)
+        # Delete the "join channel" message
+        try:
+            await query.message.delete()
+        except Exception as e:
+            logger.warning(f"Could not delete join message for user {user_id}: {e}")
+        # Proceed to deliver the content
+        await process_link_click(client, user_id, batch_id)
+    else:
+        await query.answer("❌ You haven't joined the channel yet. Please join and then click the button again.", show_alert=True)
 
 @app.on_message(filters.command("help") & filters.private)
 async def help_handler(client: Client, message: Message):
@@ -376,7 +387,6 @@ async def stats_handler(client: Client, message: Message):
     paid_batches = await files_collection.count_documents({"is_paid": True})
     await message.reply(
         "📊 Bot Statistics\n\n"
-        # FIX: Corrected string formatting
         f"👤 Users:\n   - Total Users: **{total_users}**\n   - Banned Users: **{banned_users}**\n\n"
         f"🔗 Links (Batches):\n   - Total Batches: **{total_batches}**\n   - Paid Batches: **{paid_batches}**\n   - Free Batches: **{total_batches - paid_batches}**"
     )
@@ -384,16 +394,14 @@ async def stats_handler(client: Client, message: Message):
 @app.on_message(filters.command("ban") & filters.private & filters.user(ADMINS))
 async def ban_handler(client: Client, message: Message):
     if len(message.command) < 2:
-        # FIX: Corrected command usage string
         await message.reply("Usage: `/ban <user_id>`")
         return
     try:
-        user_id_to_ban = int(message.command[1])
+        user_id_to_ban = int(message.command[span_1](start_span)[span_1](end_span))
         if user_id_to_ban in ADMINS:
             await message.reply("❌ You cannot ban an admin.")
             return
         await users_collection.update_one({"_id": user_id_to_ban}, {"$set": {"banned": True}}, upsert=True)
-        # FIX: Corrected string formatting
         await message.reply(f"✅ User **{user_id_to_ban}** has been banned successfully.")
     except ValueError:
         await message.reply("Invalid User ID provided.")
@@ -401,13 +409,11 @@ async def ban_handler(client: Client, message: Message):
 @app.on_message(filters.command("unban") & filters.private & filters.user(ADMINS))
 async def unban_handler(client: Client, message: Message):
     if len(message.command) < 2:
-        # FIX: Corrected command usage string
         await message.reply("Usage: `/unban <user_id>`")
         return
     try:
-        user_id_to_unban = int(message.command[1])
+        user_id_to_unban = int(message.command[span_2](start_span)[span_2](end_span))
         await users_collection.update_one({"_id": user_id_to_unban}, {"$set": {"banned": False}}, upsert=True)
-        # FIX: Corrected string formatting
         await message.reply(f"✅ User **{user_id_to_unban}** has been unbanned.")
     except ValueError:
         await message.reply("Invalid User ID provided.")
@@ -415,48 +421,40 @@ async def unban_handler(client: Client, message: Message):
 @app.on_message(filters.command("linkinfo") & filters.private & filters.user(ADMINS))
 async def linkinfo_handler(client: Client, message: Message):
     if len(message.command) < 2:
-        # FIX: Corrected command usage string
         await message.reply("Usage: `/linkinfo <batch_id>`")
         return
-    batch_id = message.command[1]
+    batch_id = message.command[span_3](start_span)[span_3](end_span)
     batch_record = await files_collection.find_one({"_id": batch_id})
     if not batch_record:
-        # FIX: Corrected string formatting
         await message.reply(f"❌ No link found with Batch ID: **{batch_id}**")
         return
     owner_id = batch_record.get("owner_id")
     owner_info = await users_collection.find_one({"_id": owner_id})
     owner_details = f"{owner_info.get('first_name', '')} (@{owner_info.get('username', 'N/A')})" if owner_info else "Unknown (Not in DB)"
     link_type = "Paid 💰" if batch_record.get("is_paid") else "Free 🆓"
-    file_count = len(batch_record.get("message_ids", []))
+    file_count = len(batch_record.get("message_ids",))
     text = (
-        # FIX: Corrected string formatting
         f"🔗 Link Information\n\n- Batch ID: **{batch_id}**\n- Link Type: {link_type}\n- File Count: **{file_count}**\n\n"
         f"👤 Owner Details:\n- User ID: **{owner_id}**\n- Name/Username: {owner_details}\n"
     )
     if batch_record.get("is_paid"):
-        # FIX: Corrected string formatting
         text += f"- Price: **₹{batch_record.get('price', 0):.2f}**\n- UPI ID: **{batch_record.get('upi_id', 'N/A')}**__"
     await message.reply(text)
 
 @app.on_message(filters.command("settings") & filters.private & filters.user(ADMINS))
 async def settings_handler(client: Client, message: Message):
     current_mode = await get_bot_mode()
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌍 Public (Anyone Can Upload)", callback_data="set_mode_public")],
-        [InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")]
-    ])
+    keyboard = InlineKeyboardMarkup(,
+       )
     await message.reply(f"⚙️ Bot Settings\n\nCurrent Mode: **{current_mode.upper()}**.\nSelect A New Mode:", reply_markup=keyboard)
 
 @app.on_callback_query(filters.regex(r"^set_mode_") & filters.user(ADMINS))
 async def set_mode_callback(client: Client, query: CallbackQuery):
-    new_mode = query.data.split("_")[2]
+    new_mode = query.data.split("_")[span_7](start_span)[span_7](end_span)
     await settings_collection.update_one({"_id": "bot_mode"}, {"$set": {"mode": new_mode}}, upsert=True)
     await query.answer(f"Mode set to {new_mode.upper()}!", show_alert=True)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌍 Public (Anyone Can Upload)", callback_data="set_mode_public")],
-        [InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")]
-    ])
+    keyboard = InlineKeyboardMarkup(,
+       )
     await query.message.edit_text(f"⚙️ Bot Settings\n\nMode Is Now **{new_mode.upper()}**.\nSelect A New Mode:", reply_markup=keyboard)
 
 # -------------------------
@@ -468,14 +466,13 @@ async def set_mode_callback(client: Client, query: CallbackQuery):
 @app.on_message(filters.command(["setupi", "myupi"]) & filters.private & filters.user(ADMINS))
 async def upi_commands_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    command = message.command[0].lower()
+    command = message.command.lower()
     if command == "setupi":
         user_states[user_id] = {"state": "waiting_for_new_upi", "status_msgs": [message.id]}
         await message.reply("Please Send Your UPI ID To Save Or Update It.\nExample: `yourname@upi`")
     elif command == "myupi":
         user_doc = await users_collection.find_one({"_id": user_id})
         if user_doc and user_doc.get("upi_id"):
-            # FIX: Corrected string formatting
             await message.reply(f"Your saved UPI ID is: `{user_doc['upi_id']}`\n\nTo change it, use /setupi.")
         else:
             await message.reply("You Have Not Set A UPI ID Yet. Use /setupi To Save One.")
@@ -501,7 +498,7 @@ async def file_handler(client: Client, message: Message):
         # do not interrupt existing stateful flows
         return
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"files": [], "menu_msg_id": None, "job": None}
+        user_sessions[user_id] = {"files":, "menu_msg_id": None, "job": None}
     
     user_sessions[user_id]["files"].append(message)
     # cancel previous scheduled update job
@@ -522,14 +519,12 @@ async def update_batch_menu(client: Client, user_id: int, last_message: Message)
         return
     file_count = len(user_sessions[user_id]["files"])
     text = f"✅ Batch Updated! You Have **{file_count}** Files In The Queue. What's Next?"
-    buttons = [
-        [InlineKeyboardButton("🔗 Get Free Link", callback_data="get_link")],
-        [InlineKeyboardButton("➕ Add More Files", callback_data="add_more")],
-        [InlineKeyboardButton("❌ Close", callback_data="close_msg")],
-    ]
+    buttons =,
+       ,
+       
     if user_id in ADMINS:
         # place set_price button on same row with Get Free Link
-        buttons[0].append(InlineKeyboardButton("💰 Set Price & Sell", callback_data="set_price"))
+        buttons.append(InlineKeyboardButton("💰 Set Price & Sell", callback_data="set_price"))
     keyboard = InlineKeyboardMarkup(buttons)
     old_menu_id = user_sessions[user_id].get("menu_msg_id")
     if old_menu_id:
@@ -554,7 +549,7 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
         return
 
     await query.message.edit_text("__⏳ `Step 1/2`: Copying Files To Secure Storage...__")
-    log_message_ids = []
+    log_message_ids =
     try:
         # copy files to LOG_CHANNEL (sync copy returns Message)
         for msg in user_sessions[user_id]["files"]:
@@ -612,26 +607,26 @@ async def conversation_handler(client: Client, message: Message):
             if user_doc and user_doc.get("upi_id"):
                 upi_id = user_doc["upi_id"]
                 status_msg = await message.reply(f"__✅ Price: `₹{price:.2f}` | UPI: `{upi_id}`\n⏳ Finalizing link...__")
-                state_info.setdefault("status_msgs", []).append(status_msg.id)
+                state_info.setdefault("status_msgs",).append(status_msg.id)
                 await create_paid_batch_in_db(client, message, state_info, upi_id)
             else:
                 state_info["state"] = "waiting_for_upi"
                 status_msg = await message.reply(f"__✅ Price: `₹{price:.2f}`.\n\nNow Send Your UPI ID (It Will Be Saved).__")
-                state_info.setdefault("status_msgs", []).append(status_msg.id)
+                state_info.setdefault("status_msgs",).append(status_msg.id)
         except Exception:
             status_msg = await message.reply("__**Invalid Price.** Send A Number Like `10`.__")
-            state_info.setdefault("status_msgs", []).append(status_msg.id)
+            state_info.setdefault("status_msgs",).append(status_msg.id)
 
     elif state == "waiting_for_upi":
         upi_id = sanitize_upi(message.text)
         # basic UPI pattern
         if not re.match(r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$", upi_id):
             status_msg = await message.reply("__Invalid UPI ID format. Try again.__")
-            state_info.setdefault("status_msgs", []).append(status_msg.id)
+            state_info.setdefault("status_msgs",).append(status_msg.id)
             return
         await users_collection.update_one({"_id": user_id}, {"$set": {"upi_id": upi_id}}, upsert=True)
         status_msg = await message.reply(f"__✅ UPI ID `{upi_id}` Saved.\n⏳ Finalizing Link...__")
-        state_info.setdefault("status_msgs", []).append(status_msg.id)
+        state_info.setdefault("status_msgs",).append(status_msg.id)
         await create_paid_batch_in_db(client, message, state_info, upi_id)
 
     elif state == "waiting_for_new_upi":
@@ -643,7 +638,7 @@ async def conversation_handler(client: Client, message: Message):
         await message.reply(f"__✅ Success! Your UPI ID Is Updated To: `{upi_id}`__")
         # cleanup
         try:
-            await client.delete_messages(user_id, state_info.get("status_msgs", []))
+            await client.delete_messages(user_id, state_info.get("status_msgs",))
         except Exception:
             pass
         user_states.pop(user_id, None)
@@ -669,11 +664,10 @@ async def create_paid_batch_in_db(client: Client, message: Message, state_info: 
             "payee_name": message.from_user.first_name,
             "created_at": datetime.now(timezone.utc),
         })
-        # FIX: Corrected string formatting
         await message.reply(f"✅ Paid Link Generated For {len(state_info['log_ids'])} file(s)!\n\nPrice: **₹{state_info['price']:.2f}**\n\n`{share_link}`", disable_web_page_preview=True)
         # cleanup state messages
         try:
-            await client.delete_messages(user_id, state_info.get("status_msgs", []))
+            await client.delete_messages(user_id, state_info.get("status_msgs",))
         except Exception:
             pass
     except Exception as e:
@@ -706,18 +700,14 @@ async def get_file_details(msg_id):
         return "DELETED/UNAVAILABLE FILE", "N/A"
 
 async def generate_edit_menu(batch_id: str):
-    batch_files = EDIT_SESSIONS.get(batch_id, {}).get("files", [])
-    # FIX: Corrected string formatting
+    batch_files = EDIT_SESSIONS.get(batch_id, {}).get("files",)
     text = f"✍️ Editing Link: **{batch_id}**\n\n__You have {len(batch_files)} files in this batch. You can delete files or add more.__"
-    buttons = []
+    buttons =
     for i, msg_id in enumerate(batch_files):
         file_name, file_size = await get_file_details(msg_id)
-        buttons.append([InlineKeyboardButton(f"❌ {file_name} ({file_size})", callback_data=f"edit_delete_{batch_id}_{i}")])
-    buttons.append([
-        InlineKeyboardButton("➕ Add More Files", callback_data=f"edit_add_{batch_id}"),
-        InlineKeyboardButton("✅ Save Changes", callback_data=f"edit_save_{batch_id}")
-    ])
-    buttons.append([InlineKeyboardButton("❌ Cancel Edit", callback_data=f"edit_cancel_{batch_id}")])
+        buttons.append()
+    buttons.append()
+    buttons.append()
     return text, InlineKeyboardMarkup(buttons)
 
 @app.on_message(filters.command("editlink") & filters.private)
@@ -727,12 +717,12 @@ async def edit_link_command(client: Client, message: Message):
         await message.reply("How to use:\n`/editlink <batch_id>`\n\n_You can only edit links that you have created._")
         return
 
-    batch_id_input = message.command[1]
+    batch_id_input = message.command[span_4](start_span)[span_4](end_span)
     # Support sending full URL
     if "http" in batch_id_input:
         try:
             parsed = urlparse(batch_id_input)
-            batch_id = parse_qs(parsed.query)["start"][0]
+            batch_id = parse_qs(parsed.query)["start"]
         except Exception:
             await message.reply("__❗️ **Invalid Link format.**__\n\nPlease provide just the Batch ID, not the full URL.")
             return
@@ -741,16 +731,15 @@ async def edit_link_command(client: Client, message: Message):
 
     batch_record = await files_collection.find_one({"_id": batch_id})
     if not batch_record:
-        # FIX: Corrected string formatting
         await message.reply(f"__❌ No link found with Batch ID: `{batch_id}`__")
         return
-    if batch_record.get("owner_id") != user_id:
+    if batch_record.get("owner_id")!= user_id:
         await message.reply("__🔒 You can only edit links that you have created.__")
         return
 
     EDIT_SESSIONS[batch_id] = {
         "owner_id": user_id,
-        "files": list(batch_record.get("message_ids", [])),
+        "files": list(batch_record.get("message_ids",)),
         "edit_msg_id": None
     }
     user_states[user_id] = {"state": "editing_link", "batch_id": batch_id}
@@ -764,17 +753,17 @@ async def edit_link_callbacks(client: Client, query: CallbackQuery):
     user_id = query.from_user.id
     # parts will be like ['edit', 'action', 'batch_id', 'index'] or ['edit', 'action', 'batch_id']
     parts = query.data.split("_") 
-    action = parts[1]
-    batch_id = parts[2]
+    action = parts[span_5](start_span)[span_5](end_span)
+    batch_id = parts[span_8](start_span)[span_8](end_span)
 
     session = EDIT_SESSIONS.get(batch_id)
-    if not session or session.get("owner_id") != user_id:
+    if not session or session.get("owner_id")!= user_id:
         await query.answer("This edit session is invalid or has expired.", show_alert=True)
         return
 
     if action == "delete":
         try:
-            idx = int(parts[3])
+            idx = int(parts[span_9](start_span)[span_9](end_span))
             del EDIT_SESSIONS[batch_id]["files"][idx]
             await query.answer("✅ File removed.")
             text, keyboard = await generate_edit_menu(batch_id)
@@ -796,7 +785,6 @@ async def edit_link_callbacks(client: Client, query: CallbackQuery):
         await files_collection.update_one({"_id": batch_id}, {"$set": {"message_ids": new_file_list}})
         del EDIT_SESSIONS[batch_id]
         user_states.pop(user_id, None)
-        # FIX: Corrected string formatting
         await query.message.edit_text(f"__✅ **Link `{batch_id}` updated successfully!** It now contains **{len(new_file_list)}** files.__")
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio), group=2)
@@ -898,7 +886,6 @@ async def process_link_click(client: Client, user_id: int, batch_id: str):
 @app.on_callback_query(filters.regex(r"^i_paid_"))
 async def i_have_paid_callback(client: Client, query: CallbackQuery):
     try:
-        # FIX: Corrected split to use '_' as delimiter
         _, _, payment_id = query.data.split("_", 2)
     except Exception:
         await query.answer("Invalid request.", show_alert=True)
@@ -972,7 +959,6 @@ async def process_payment_approval(payment_id: str, approved_by: str = "Seller (
             # delete orphan payment
             await payments_collection.delete_one({"_id": payment_id})
             logger.error(f"Critical Error: Batch {batch_id} not found for payment {payment_id}. Deleting orphan payment.")
-            # FIX: Corrected string formatting
             return f"__Error: The file batch `{batch_id}` no longer exists. Payment record deleted.__"
 
         owner_id = batch_record["owner_id"]
@@ -1009,7 +995,6 @@ async def process_payment_approval(payment_id: str, approved_by: str = "Seller (
 @app.on_callback_query(filters.regex(r"^(approve|decline)"))
 async def payment_verification_callback(client: Client, query: CallbackQuery):
     try:
-        # FIX: Corrected split to use '_' as delimiter
         action, payment_id = query.data.split("_", 1)
     except Exception:
         return
@@ -1021,7 +1006,7 @@ async def payment_verification_callback(client: Client, query: CallbackQuery):
         return
 
     batch_record = await files_collection.find_one({"_id": payment_record["batch_id"]})
-    if not batch_record or batch_record["owner_id"] != owner_id:
+    if not batch_record or batch_record["owner_id"]!= owner_id:
         await query.answer("__This Is Not For You.__", show_alert=True)
         return
 
@@ -1038,7 +1023,6 @@ async def payment_verification_callback(client: Client, query: CallbackQuery):
             pass
         buyer_id = payment_record["buyer_id"]
         unique_amount = payment_record["unique_amount"]
-        # FIX: Corrected string formatting
         await query.message.edit_text(f"__❌ Payment Of `₹{unique_amount}` Declined For User `{buyer_id}`.__")
         try:
             await client.send_message(buyer_id, "__😔 **Payment Declined**\nThe Seller Could Not Verify Your Payment.__")
@@ -1137,31 +1121,25 @@ def start_background_services():
     except Exception as e:
         logger.exception("Failed to start scheduler")
 
-async def shutdown():
-    try:
-        await app.stop()
-    except Exception:
-        pass
-    try:
-        scheduler.shutdown(wait=False)
-    except Exception:
-        pass
-    try:
-        async_mongo_client.close()
-    except Exception:
-        pass
-    try:
-        sync_mongo_client.close()
-    except Exception:
-        pass
-
-# FIX: Added the correct standard Python main execution block check
-if __name__ == "__main__":
-    # run flask + scheduler, then start bot
+async def main():
+    # Start background services (Flask, APScheduler)
     start_background_services()
+    
     logger.info("Starting bot client...")
-    # Start Pyrogram client (this blocks until stopped)
-    app.run()
-    # on exit (if any cleanup needed)
+    await app.start()
+    logger.info("Bot client started.")
+    
+    # Keep the bot running
+    await idle()
+    
+    # Shutdown sequence
+    logger.info("Stopping bot...")
+    await app.stop()
+    scheduler.shutdown()
     logger.info("Bot stopped.")
 
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot shutdown requested.")
