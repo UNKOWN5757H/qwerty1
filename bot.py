@@ -1,6 +1,7 @@
-# --- Files-Store-main/bot.py (VERSION 13.1 - JOIN BUTTON FIX) ---
+# --- Files-Store-main/bot.py (VERSION 13.2 - SYNTAX FIX) ---
 
-# bot_v13.py (VERSION 13.1) — Production-ready, Motor async + APScheduler integration
+# bot_v13.py (VERSION 13.2) — Production-ready, Motor async + APScheduler integration
+# - Fixes critical syntax errors causing application crashes.
 # - Fixes the "I Have Joined" button functionality.
 # - Uses motor (AsyncIOMotorClient) for async DB operations used inside asyncio coroutines
 # - Keeps pymongo MongoClient for APScheduler MongoDBJobStore (sync)
@@ -438,7 +439,7 @@ async def linkinfo_handler(client: Client, message: Message):
         f"👤 Owner Details:\n- User ID: **{owner_id}**\n- Name/Username: {owner_details}\n"
     )
     if batch_record.get("is_paid"):
-        text += f"- Price: **₹{batch_record.get('price', 0):.2f}**\n- UPI ID: **{batch_record.get('upi_id', 'N/A')}**__"
+        text += f"- Price: **₹{batch_record.get('price', 0):.2f}**\n- UPI ID: **{batch_record.get('upi_id', 'N/A')}**"
     await message.reply(text)
 
 @app.on_message(filters.command("settings") & filters.private & filters.user(ADMINS))
@@ -1043,26 +1044,11 @@ async def send_files_from_batch(client: Client, user_id: int, batch_record: dict
     """
     await client.send_message(user_id, f"✅ Access Granted! You Are Receiving {len(batch_record['message_ids'])} Files.")
     all_sent_successfully = True
+    sent_message_ids =
     for msg_id in batch_record['message_ids']:
         try:
             sent_file_msg = await client.copy_message(chat_id=user_id, from_chat_id=LOG_CHANNEL, message_id=msg_id)
-            warning_text = f"\n\n\n__⚠️ IMPORTANT!\n\nThese Files Will Be Automatically Deleted In {delay_amount} {delay_unit}. Please Forward Them To Your Saved Messages Immediately.__"
-            captionable_media = (enums.MessageMediaType.VIDEO, enums.MessageMediaType.DOCUMENT, enums.MessageMediaType.PHOTO, enums.MessageMediaType.AUDIO)
-            if sent_file_msg.media in captionable_media:
-                try:
-                    await sent_file_msg.edit_caption((sent_file_msg.caption or "") + warning_text)
-                except Exception:
-                    # if editing caption fails, just send a reply
-                    await sent_file_msg.reply(warning_text, quote=True)
-            else:
-                await sent_file_msg.reply(warning_text, quote=True)
-
-            run_time = datetime.now(IST) + (timedelta(minutes=delay_amount) if delay_unit == "Minutes" else timedelta(hours=delay_amount))
-            try:
-                scheduler.add_job(delete_message_job, "date", run_date=run_time, args=[sent_file_msg.chat.id, [sent_file_msg.id]], misfire_grace_time=300)
-            except Exception as e:
-                logger.warning(f"Could not schedule delete job: {e}")
-
+            sent_message_ids.append(sent_file_msg.id)
         except (UserIsBlocked, InputUserDeactivated):
             all_sent_successfully = False
             logger.warning(f"Failed to send file to {user_id}: User has blocked the bot or account deactivated.")
@@ -1074,6 +1060,21 @@ async def send_files_from_batch(client: Client, user_id: int, batch_record: dict
                 await client.send_message(user_id, "__❌ Could Not Send One Of The Files. It Might Have Been Deleted From The Source.__")
             except Exception:
                 pass
+    
+    if sent_message_ids:
+        warning_text = f"\n\n⚠️ **IMPORTANT!**\nThese files will be automatically deleted in **{delay_amount} {delay_unit}**. Please forward them to your saved messages immediately."
+        try:
+            # Send the warning as a separate message, replying to the last sent file
+            await client.send_message(user_id, warning_text, reply_to_message_id=sent_message_ids[-1])
+        except Exception as e:
+            logger.warning(f"Could not send deletion warning message to {user_id}: {e}")
+
+        run_time = datetime.now(IST) + (timedelta(minutes=delay_amount) if delay_unit == "Minutes" else timedelta(hours=delay_amount))
+        try:
+            scheduler.add_job(delete_message_job, "date", run_date=run_time, args=[user_id, sent_message_ids], misfire_grace_time=300)
+        except Exception as e:
+            logger.warning(f"Could not schedule delete job for user {user_id}: {e}")
+
     return all_sent_successfully
 
 # -------------------------
