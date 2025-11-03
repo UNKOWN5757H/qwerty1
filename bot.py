@@ -7,6 +7,7 @@ import random
 import string
 import asyncio
 import re
+import signal
 from datetime import datetime, timedelta, timezone
 from threading import Thread
 from urllib.parse import urlparse, parse_qs, quote_plus
@@ -28,7 +29,6 @@ from apscheduler.jobstores.base import JobLookupError
 # Logging & config
 # -------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-# quieter for apscheduler
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 load_dotenv()
@@ -53,12 +53,13 @@ APPROVAL_EXPIRATION_HOURS = int(os.environ.get("APPROVAL_EXPIRATION_HOURS", 24))
 IST = pytz.timezone("Asia/Kolkata")
 
 # -------------------------
-# Flask web app for webhook automation
+# Flask web app for webhook automation & health checks
 # -------------------------
 flask_app = Flask(__name__)
 
-@flask_app.route("/", methods=["GET"])
-def index():
+@flask_app.route("/", methods=["GET", "HEAD"])
+def index_route():
+    # simple health check endpoint
     return "FileLinkBot is alive!", 200
 
 @flask_app.route("/api/shortcut", methods=["POST"])
@@ -97,7 +98,7 @@ def shortcut_webhook():
         return jsonify({"status":"info","message":"Payment is for a normal user, manual approval required."}), 200
 
 def run_flask():
-    # run Flask in production appropriately (here using the built-in server for simplicity)
+    # note: for production use a WSGI server instead of Flask built-in server
     flask_app.run(host="0.0.0.0", port=PORT)
 
 # -------------------------
@@ -139,18 +140,15 @@ async def is_user_member(client: Client, user_id: int) -> bool:
     if not UPDATE_CHANNEL:
         return True
     try:
-        # client.get_chat_member returns a ChatMember object. Check its status
         chat_id = UPDATE_CHANNEL if UPDATE_CHANNEL.startswith("@") else f"@{UPDATE_CHANNEL}"
         member = await client.get_chat_member(chat_id=chat_id, user_id=user_id)
         status = getattr(member, "status", None)
-        # statuses like "left","kicked" mean the user is not an active member
         if status in ("left", "kicked", None):
             return False
         return True
     except UserNotParticipant:
         return False
     except RPCError as e:
-        # Pyrogram may raise various RPCErrors if something else is wrong.
         logging.warning("is_user_member RPCError for user %s: %s", user_id, e)
         return False
     except Exception as e:
@@ -159,7 +157,7 @@ async def is_user_member(client: Client, user_id: int) -> bool:
 
 async def add_user_to_db(message: Message):
     """Add or update user basic info, avoid failing if fields missing."""
-    u = message.from_user
+    u = getattr(message, "from_user", None)
     if not u:
         return
     doc = {
@@ -168,7 +166,6 @@ async def add_user_to_db(message: Message):
         "username": getattr(u, "username", None),
     }
     try:
-        # "$setOnInsert" must be used properly within the update document
         users_collection.update_one({"_id": u.id}, {"$set": doc, "$setOnInsert": {"banned": False, "joined_date": datetime.now(timezone.utc)}}, upsert=True)
     except Exception as e:
         logging.warning("Failed to upsert user: %s", e)
@@ -254,13 +251,13 @@ async def get_file_details(msg_id: int):
         msg = await app.get_messages(LOG_CHANNEL, msg_id)
         if msg is None:
             return "DELETED/UNAVAILABLE FILE", "N/A"
-        if msg.document:
+        if getattr(msg, "document", None):
             return msg.document.file_name or "Document", f"{(msg.document.file_size or 0) / 1024 / 1024:.2f} MB"
-        elif msg.video:
+        elif getattr(msg, "video", None):
             return msg.video.file_name or "Video File", f"{(msg.video.file_size or 0) / 1024 / 1024:.2f} MB"
-        elif msg.photo:
+        elif getattr(msg, "photo", None):
             return "Photo File", f"{(msg.photo.file_size or 0) / 1024 / 1024:.2f} MB"
-        elif msg.audio:
+        elif getattr(msg, "audio", None):
             return msg.audio.file_name or "Audio File", f"{(msg.audio.file_size or 0) / 1024 / 1024:.2f} MB"
         return "Unknown File", "N/A"
     except Exception as e:
@@ -285,7 +282,9 @@ async def generate_edit_menu(batch_id: str):
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     await add_user_to_db(message)
-    user_id = message.from_user.id
+    user_id = getattr(message.from_user, "id", None)
+    if not user_id:
+        return
 
     # remove any old menu message for this user
     if user_sessions.get(user_id) and user_sessions[user_id].get("menu_msg_id"):
@@ -302,13 +301,12 @@ async def start_handler(client: Client, message: Message):
 
         # if UPDATE_CHANNEL is set, require join
         if not await is_user_member(client, user_id):
-            join_btn = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}" if not UPDATE_CHANNEL.startswith("@") else f"https://t.me/{UPDATE_CHANNEL[1:]}")
-            # Send a simple message with join link (no "I Have Joined" button)
+            join_url = f"https://t.me/{UPDATE_CHANNEL[1:]}" if UPDATE_CHANNEL.startswith("@") else f"https://t.me/{UPDATE_CHANNEL}"
+            join_btn = InlineKeyboardButton("🔗 Join Channel", url=join_url)
             try:
                 await message.reply("__👋 Hello! Please join our update channel to access content. Once you join, I will send your files automatically.__",
                                     reply_markup=InlineKeyboardMarkup([[join_btn]]))
             except Exception:
-                # fallback simple text
                 try:
                     await client.send_message(user_id, "__👋 Hello! Please join our update channel to access content. Once you join, I will send your files automatically.__")
                 except Exception:
@@ -322,9 +320,7 @@ async def start_handler(client: Client, message: Message):
                     for _ in range(checks):
                         await asyncio.sleep(interval)
                         if await is_user_member(client, user_id):
-                            # user just joined -> send files automatically
                             try:
-                                # optionally inform the user
                                 await client.send_message(user_id, "__✅ Thank you for joining! Preparing your files...__")
                             except Exception:
                                 pass
@@ -343,11 +339,9 @@ async def start_handler(client: Client, message: Message):
                 except Exception as e:
                     logging.exception("auto_check_and_send unexpected error: %s", e)
 
-            # create background task (no awaiting, runs in event loop)
             try:
                 asyncio.create_task(auto_check_and_send())
             except Exception:
-                # last-resort: schedule with loop
                 try:
                     app.loop.create_task(auto_check_and_send())
                 except Exception as e:
@@ -1032,19 +1026,15 @@ async def send_files_from_batch(client, user_id: int, batch_record: dict, delay_
         try:
             sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=LOG_CHANNEL, message_id=msg_id)
             if sent_msg is None:
-                # maybe message deleted in log channel
                 logging.warning("send_files_from_batch: log message %s returned None", msg_id)
                 continue
             warning_text = f"\n\n\n__**⚠️ IMPORTANT!**\n\nThese Files Will Be **Automatically Deleted In {delay_amount} {delay_unit}**. Please Forward Them To Your **Saved Messages** Immediately.__"
-            # If media supports caption, append, else reply
             try:
                 if getattr(sent_msg, "caption", None) is not None:
                     await sent_msg.edit_caption((sent_msg.caption or "") + warning_text)
                 else:
-                    # not captionable -> send a reply
                     await sent_msg.reply(warning_text, quote=True)
             except Exception:
-                # fallback: send text reply
                 try:
                     await client.send_message(user_id, warning_text)
                 except Exception:
@@ -1071,23 +1061,87 @@ async def send_files_from_batch(client, user_id: int, batch_record: dict, delay_
     return all_sent_successfully
 
 # -------------------------
-# Startup & shutdown
+# Startup & shutdown with asyncio-safe main()
 # -------------------------
-def start_services():
-    # Start scheduler
+async def start_services():
+    """Start scheduler and Flask server (Flask runs in a background thread)."""
     try:
         scheduler.start()
         logging.info("Scheduler started.")
     except Exception as e:
         logging.exception("Failed to start scheduler: %s", e)
-    # start flask in thread
+
+    # start flask in thread (health checks)
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
     logging.info("Flask webserver started.")
 
+async def stop_services():
+    """Stop scheduler and any background tasks cleanly."""
+    try:
+        scheduler.shutdown(wait=False)
+        logging.info("Scheduler shutdown requested.")
+    except Exception as e:
+        logging.warning("Error shutting down scheduler: %s", e)
+
+async def shutdown(loop, stop_event: asyncio.Event):
+    """Trigger shutdown when called from signal handler."""
+    logging.info("Shutdown initiated.")
+    stop_event.set()
+
+async def main():
+    # stop_event is used to keep the app running until a signal is received
+    stop_event = asyncio.Event()
+
+    # register signal handlers
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(loop, stop_event)))
+        except NotImplementedError:
+            # some platforms (Windows) may not support add_signal_handler
+            pass
+
+    # start services
+    await start_services()
+
+    # start the pyrogram client
+    try:
+        await app.start()
+        logging.info("Pyrogram client started.")
+    except Exception as e:
+        logging.exception("Failed to start Pyrogram client: %s", e)
+        # try to stop scheduler/flask and exit
+        await stop_services()
+        return
+
+    # wait until stop_event is set (triggered by signal handler)
+    try:
+        logging.info("Bot is running. Waiting for stop signal...")
+        await stop_event.wait()
+    finally:
+        logging.info("Stop signal received. Shutting down...")
+
+    # graceful shutdown
+    try:
+        await app.stop()
+        logging.info("Pyrogram client stopped.")
+    except RuntimeError:
+        logging.warning("Event loop already closed during app.stop().")
+    except Exception as e:
+        logging.warning("Error stopping Pyrogram client: %s", e)
+
+    # stop other services
+    try:
+        await stop_services()
+    except Exception as e:
+        logging.warning("Error during stop_services: %s", e)
+
 if __name__ == "__main__":
     logging.info("Starting services...")
-    start_services()
-    logging.info("Bot is starting...")
-    # app.run will start the client and block; it's fine here.
-    app.run()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("KeyboardInterrupt received. Exiting.")
+    except Exception as e:
+        logging.exception("Unhandled exception in main: %s", e)
