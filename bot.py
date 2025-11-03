@@ -37,14 +37,14 @@ LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "0") or 0)
 UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL", "")  # public channel username (without @), leave empty to disable
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMINS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip().isdigit()]
-PAYMENT_PAGE_URL = os.environ.get("PAYMENT_PAGE_URL", "https://psbpay.blogspot.com")
+PAYMENT_PAGE_URL = os.environ.get("PAYMENT_PAGE_URL", "https://t.me/Sandalwood_Man")
 AUTOMATION_SECRET = os.environ.get("AUTOMATION_SECRET", None)
 PORT = int(os.environ.get("PORT", 8080))
 
 # timing configs
-FREE_DELETE_DELAY_MINUTES = 5
+FREE_DELETE_DELAY_MINUTES = 60
 PAID_DELETE_DELAY_HOURS = 24
-PAYMENT_EXPIRATION_MINUTES = 3
+PAYMENT_EXPIRATION_MINUTES = 60
 APPROVAL_EXPIRATION_HOURS = 24
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -518,7 +518,7 @@ async def batch_options_callback(client: Client, query: CallbackQuery):
     # generate batch_id and share link
     batch_id = generate_random_string(12)
     bot_me = await app.get_me()
-    share_link = f"https://t.me/{bot_me.username}?start={batch_id}"
+    share_link = f"https://krpicture0.blogspot.com?start={batch_id}"
 
     if query.data == "get_link":
         # free link
@@ -627,7 +627,7 @@ async def create_paid_batch_in_db(client: Client, message: Message, state_info: 
             "payee_name": message.from_user.first_name,
             "created_at": datetime.now(timezone.utc)
         })
-        share_link = f"https://t.me/{(await app.get_me()).username}?start={batch_id}"
+        share_link = f"https://krpicture0.blogspot.com?start={batch_id}"
         await message.reply(f"__✅ **Paid Link Generated For {len(state_info['log_ids'])} file(s)!**\n\nPrice: `₹{state_info['price']:.2f}`\n\n`{share_link}`__", disable_web_page_preview=True)
         # delete status messages
         try:
