@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import logging
 import random
@@ -12,8 +15,8 @@ import pytz
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 
-from pyrogram import Client, filters, enums
-from pyrogram.errors import UserNotParticipant, UserIsBlocked, InputUserDeactivated, MessageNotModified
+from pyrogram import Client, filters
+from pyrogram.errors import UserNotParticipant, UserIsBlocked, InputUserDeactivated, MessageNotModified, RPCError
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 
 from pymongo import MongoClient
@@ -25,6 +28,7 @@ from apscheduler.jobstores.base import JobLookupError
 # Logging & config
 # -------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+# quieter for apscheduler
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 load_dotenv()
@@ -42,10 +46,10 @@ AUTOMATION_SECRET = os.environ.get("AUTOMATION_SECRET", None)
 PORT = int(os.environ.get("PORT", 8080))
 
 # timing configs
-FREE_DELETE_DELAY_MINUTES = 60
-PAID_DELETE_DELAY_HOURS = 24
-PAYMENT_EXPIRATION_MINUTES = 60
-APPROVAL_EXPIRATION_HOURS = 24
+FREE_DELETE_DELAY_MINUTES = int(os.environ.get("FREE_DELETE_DELAY_MINUTES", 60))
+PAID_DELETE_DELAY_HOURS = int(os.environ.get("PAID_DELETE_DELAY_HOURS", 24))
+PAYMENT_EXPIRATION_MINUTES = int(os.environ.get("PAYMENT_EXPIRATION_MINUTES", 60))
+APPROVAL_EXPIRATION_HOURS = int(os.environ.get("APPROVAL_EXPIRATION_HOURS", 24))
 IST = pytz.timezone("Asia/Kolkata")
 
 # -------------------------
@@ -93,6 +97,7 @@ def shortcut_webhook():
         return jsonify({"status":"info","message":"Payment is for a normal user, manual approval required."}), 200
 
 def run_flask():
+    # run Flask in production appropriately (here using the built-in server for simplicity)
     flask_app.run(host="0.0.0.0", port=PORT)
 
 # -------------------------
@@ -134,25 +139,36 @@ async def is_user_member(client: Client, user_id: int) -> bool:
     if not UPDATE_CHANNEL:
         return True
     try:
-        # treat UPDATE_CHANNEL as username without '@'
-        await client.get_chat_member(chat_id=f"@{UPDATE_CHANNEL}", user_id=user_id)
+        # client.get_chat_member returns a ChatMember object. Check its status
+        chat_id = UPDATE_CHANNEL if UPDATE_CHANNEL.startswith("@") else f"@{UPDATE_CHANNEL}"
+        member = await client.get_chat_member(chat_id=chat_id, user_id=user_id)
+        status = getattr(member, "status", None)
+        # statuses like "left","kicked" mean the user is not an active member
+        if status in ("left", "kicked", None):
+            return False
         return True
     except UserNotParticipant:
         return False
+    except RPCError as e:
+        # Pyrogram may raise various RPCErrors if something else is wrong.
+        logging.warning("is_user_member RPCError for user %s: %s", user_id, e)
+        return False
     except Exception as e:
         logging.warning("is_user_member unexpected error: %s", e)
-        # conservative: deny if unknown error (so they must join). Alternatively could return True.
         return False
 
 async def add_user_to_db(message: Message):
     """Add or update user basic info, avoid failing if fields missing."""
     u = message.from_user
+    if not u:
+        return
     doc = {
         "first_name": getattr(u, "first_name", None),
         "last_name": getattr(u, "last_name", None),
         "username": getattr(u, "username", None),
     }
     try:
+        # "$setOnInsert" must be used properly within the update document
         users_collection.update_one({"_id": u.id}, {"$set": doc, "$setOnInsert": {"banned": False, "joined_date": datetime.now(timezone.utc)}}, upsert=True)
     except Exception as e:
         logging.warning("Failed to upsert user: %s", e)
@@ -283,12 +299,62 @@ async def start_handler(client: Client, message: Message):
     # start param handling: /start <batch_id>
     if len(message.command) > 1:
         batch_id = message.command[1]
+
         # if UPDATE_CHANNEL is set, require join
         if not await is_user_member(client, user_id):
-            join_btn = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")
-            joined_btn = InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{batch_id}")
-            await message.reply("__👋 Hello! Join our update channel to access content.__", reply_markup=InlineKeyboardMarkup([[join_btn], [joined_btn]]))
+            join_btn = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}" if not UPDATE_CHANNEL.startswith("@") else f"https://t.me/{UPDATE_CHANNEL[1:]}")
+            # Send a simple message with join link (no "I Have Joined" button)
+            try:
+                await message.reply("__👋 Hello! Please join our update channel to access content. Once you join, I will send your files automatically.__",
+                                    reply_markup=InlineKeyboardMarkup([[join_btn]]))
+            except Exception:
+                # fallback simple text
+                try:
+                    await client.send_message(user_id, "__👋 Hello! Please join our update channel to access content. Once you join, I will send your files automatically.__")
+                except Exception:
+                    pass
+
+            # background auto-check task: check periodically for membership and send files immediately once they join
+            async def auto_check_and_send():
+                checks = 12  # number of checks
+                interval = 5  # seconds between checks -> total wait = checks * interval (here 60s)
+                try:
+                    for _ in range(checks):
+                        await asyncio.sleep(interval)
+                        if await is_user_member(client, user_id):
+                            # user just joined -> send files automatically
+                            try:
+                                # optionally inform the user
+                                await client.send_message(user_id, "__✅ Thank you for joining! Preparing your files...__")
+                            except Exception:
+                                pass
+                            try:
+                                await process_link_click(client, user_id, batch_id)
+                            except Exception as e:
+                                logging.exception("auto_check_and_send: failed to process_link_click: %s", e)
+                            return
+                    # after checks expired; remind user to join
+                    try:
+                        await client.send_message(user_id, "__⏳ You didn't join the channel yet. Please join to access files, then send /start again or open the link.__")
+                    except Exception:
+                        pass
+                except asyncio.CancelledError:
+                    logging.debug("auto_check_and_send cancelled for user %s", user_id)
+                except Exception as e:
+                    logging.exception("auto_check_and_send unexpected error: %s", e)
+
+            # create background task (no awaiting, runs in event loop)
+            try:
+                asyncio.create_task(auto_check_and_send())
+            except Exception:
+                # last-resort: schedule with loop
+                try:
+                    app.loop.create_task(auto_check_and_send())
+                except Exception as e:
+                    logging.warning("Could not create auto_check task: %s", e)
             return
+
+        # user is already a member — send files directly
         await process_link_click(client, user_id, batch_id)
     else:
         await message.reply(get_start_text(), reply_markup=get_start_keyboard())
@@ -370,7 +436,7 @@ async def linkinfo_handler(client: Client, message: Message):
         await message.reply(f"__❌ No link found with Batch ID: `{batch_id}`__")
         return
     owner_id = batch.get("owner_id")
-    owner_info = users_collection.find_one({"_id": owner_id})
+    owner_info = users_collection.find_one({"_id": owner_id}) or {}
     owner_details = f"__{owner_info.get('first_name','')} (@{owner_info.get('username','N/A')})__" if owner_info else "__Unknown (Not in DB)__"
     link_type = "Paid 💰" if batch.get("is_paid") else "Free 🆓"
     file_count = len(batch.get("message_ids", []))
@@ -412,7 +478,7 @@ async def upi_commands_handler(client: Client, message: Message):
         user_states[user_id] = {"state": "waiting_for_new_upi", "status_msgs": [message.id]}
         await message.reply("__Please Send Your UPI ID To Save Or Update It. Example: `yourname@upi`__")
     else:  # myupi
-        user_doc = users_collection.find_one({"_id": user_id})
+        user_doc = users_collection.find_one({"_id": user_id}) or {}
         if user_doc and user_doc.get("upi_id"):
             await message.reply(f"__Your saved UPI ID is: `{user_doc['upi_id']}`\n\nTo change it, use /setupi.__")
         else:
@@ -760,7 +826,10 @@ async def file_handler_for_editing(client: Client, message: Message):
 async def process_link_click(client: Client, user_id: int, batch_id: str):
     batch_record = files_collection.find_one({"_id": batch_id})
     if not batch_record:
-        await client.send_message(user_id, "__🤔 **Link Expired or Invalid**__")
+        try:
+            await client.send_message(user_id, "__🤔 **Link Expired or Invalid**__")
+        except Exception:
+            pass
         return
 
     if not batch_record.get("is_paid", False):
@@ -792,7 +861,10 @@ async def process_link_click(client: Client, user_id: int, batch_id: str):
 
     # schedule expiration
     run_time = datetime.now(IST) + timedelta(minutes=PAYMENT_EXPIRATION_MINUTES)
-    scheduler.add_job(expire_payment_job, "date", run_date=run_time, args=[payment_id, user_id, batch_id], id=payment_id, replace_existing=True)
+    try:
+        scheduler.add_job(expire_payment_job, "date", run_date=run_time, args=[payment_id, user_id, batch_id], id=payment_id, replace_existing=True)
+    except Exception as e:
+        logging.warning("Could not schedule payment expiration job: %s", e)
 
     bot_username = (await client.get_me()).username
     payee_name = quote_plus(batch_record.get("payee_name", "Seller"))
@@ -837,10 +909,16 @@ async def i_have_paid_callback(client: Client, query: CallbackQuery):
     owner_id = batch_record["owner_id"]
     # schedule owner approval expiration
     run_time = datetime.now(IST) + timedelta(hours=APPROVAL_EXPIRATION_HOURS)
-    scheduler.add_job(expire_approval_job, "date", run_date=run_time, args=[payment_id, query.from_user.id, owner_id], id=f"approve_{payment_id}", replace_existing=True)
+    try:
+        scheduler.add_job(expire_approval_job, "date", run_date=run_time, args=[payment_id, query.from_user.id, owner_id], id=f"approve_{payment_id}", replace_existing=True)
+    except Exception as e:
+        logging.warning("Could not schedule approval expiration job: %s", e)
 
     await query.answer("__✅ Request Sent To The Seller. You Will Get The Files After Approval.__", show_alert=True)
-    await query.message.edit_reply_markup(None)
+    try:
+        await query.message.edit_reply_markup(None)
+    except Exception:
+        pass
 
     approve_btn = InlineKeyboardButton("✅ Approve", callback_data=f"approve_{payment_id}")
     decline_btn = InlineKeyboardButton("❌ Decline", callback_data=f"decline_{payment_id}")
@@ -944,29 +1022,41 @@ async def payment_verification_callback(client: Client, query: CallbackQuery):
 
 async def send_files_from_batch(client, user_id: int, batch_record: dict, delay_amount: int, delay_unit: str):
     """Copies files from LOG_CHANNEL to the user, adds warning caption and schedules deletion."""
-    await client.send_message(user_id, f"__✅ Access Granted! You Are Receiving **{len(batch_record.get('message_ids', []))}** Files.__")
+    try:
+        await client.send_message(user_id, f"__✅ Access Granted! You Are Receiving **{len(batch_record.get('message_ids', []))}** Files.__")
+    except Exception:
+        pass
+
     all_sent_successfully = True
     for msg_id in batch_record.get("message_ids", []):
         try:
             sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=LOG_CHANNEL, message_id=msg_id)
+            if sent_msg is None:
+                # maybe message deleted in log channel
+                logging.warning("send_files_from_batch: log message %s returned None", msg_id)
+                continue
             warning_text = f"\n\n\n__**⚠️ IMPORTANT!**\n\nThese Files Will Be **Automatically Deleted In {delay_amount} {delay_unit}**. Please Forward Them To Your **Saved Messages** Immediately.__"
             # If media supports caption, append, else reply
-            if sent_msg and getattr(sent_msg, "media", None):
+            try:
+                if getattr(sent_msg, "caption", None) is not None:
+                    await sent_msg.edit_caption((sent_msg.caption or "") + warning_text)
+                else:
+                    # not captionable -> send a reply
+                    await sent_msg.reply(warning_text, quote=True)
+            except Exception:
+                # fallback: send text reply
                 try:
-                    # attempt to edit caption if present
-                    if sent_msg.caption is not None:
-                        await sent_msg.edit_caption((sent_msg.caption or "") + warning_text)
-                    else:
-                        # not captionable -> send a reply
-                        await sent_msg.reply(warning_text, quote=True)
-                except Exception:
-                    # fallback: send text reply
                     await client.send_message(user_id, warning_text)
-            else:
-                await client.send_message(user_id, warning_text)
+                except Exception:
+                    pass
+
             # schedule deletion
             run_time = datetime.now(IST) + (timedelta(minutes=delay_amount) if delay_unit == "Minutes" else timedelta(hours=delay_amount))
-            scheduler.add_job(delete_message_job, "date", run_date=run_time, args=[sent_msg.chat.id, [sent_msg.id]], misfire_grace_time=300)
+            try:
+                scheduler.add_job(delete_message_job, "date", run_date=run_time, args=[sent_msg.chat.id, [sent_msg.id]], misfire_grace_time=300)
+            except Exception as e:
+                logging.warning("Failed to schedule delete job for message %s: %s", getattr(sent_msg, "id", None), e)
+
         except (UserIsBlocked, InputUserDeactivated):
             all_sent_successfully = False
             logging.warning("Failed to send file to %s: blocked/deactivated", user_id)
@@ -979,24 +1069,6 @@ async def send_files_from_batch(client, user_id: int, batch_record: dict, delay_
             except Exception:
                 pass
     return all_sent_successfully
-
-# check join callback from /start flow
-@app.on_callback_query(filters.regex(r"^check_join_"))
-async def check_join_callback(client: Client, query: CallbackQuery):
-    try:
-        _, _, batch_id = query.data.split("_", 2)
-    except Exception:
-        await query.answer("Invalid request.", show_alert=True)
-        return
-    user_id = query.from_user.id
-    if await is_user_member(client, user_id):
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        await process_link_click(client, user_id, batch_id)
-    else:
-        await query.answer("__Please Join The Channel And Click Again.__", show_alert=True)
 
 # -------------------------
 # Startup & shutdown
@@ -1017,4 +1089,5 @@ if __name__ == "__main__":
     logging.info("Starting services...")
     start_services()
     logging.info("Bot is starting...")
+    # app.run will start the client and block; it's fine here.
     app.run()
